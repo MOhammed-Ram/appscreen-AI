@@ -166,6 +166,47 @@ To use the AI-powered translation feature:
 
 Your API key is stored locally in your browser and only sent to the respective AI provider's API.
 
+## MCP Automation (Deterministic)
+
+This repository ships with a local MCP server that can automate listing image generation from structured specs.
+
+- Scope in v1: deterministic rendering only (no AI translation/title generation)
+- Transport: stdio
+- Output: PNG files in `outputDir/<device>/<language>/screenshot-*.png`
+
+### Setup
+
+```bash
+npm install
+npm run mcp:start
+```
+
+### MCP Tools
+
+- `list_output_presets`
+- `validate_listing_spec`
+- `dry_run_listing_job`
+- `generate_listing_images`
+
+### Example client config
+
+```json
+{
+  "mcpServers": {
+    "appscreen": {
+      "command": "node",
+      "args": ["/absolute/path/to/appscreen-AI/mcp/server.js"]
+    }
+  }
+}
+```
+
+### Troubleshooting
+
+- Missing assets: `generate_listing_images` fails unless `allowPartial` is true.
+- Unsupported output size: use one of the listed presets, or provide a valid custom config.
+- If rendering stalls in CI, ensure Playwright Chromium is installed.
+
 ## Tech Stack
 
 - Vanilla JavaScript (no frameworks)

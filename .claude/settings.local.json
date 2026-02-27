@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -c:*)",
+      "Bash(npm run test:mcp:*)",
+      "Bash(npx playwright test:*)",
+      "Bash(powershell -Command:*)",
+      "Bash(npm run test:smoke:*)",
+      "Bash(cd:*)",
+      "Bash(curl:*)",
+      "Bash(node --check:*)"
+    ]
+  }
+}

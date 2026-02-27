@@ -1,14 +1,53 @@
 const { app, BrowserWindow, Menu, shell, dialog, ipcMain } = require('electron');
+const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { normalizeSettings, loadSettings, saveSettings } = require('./settings-store');
 
 // Keep a global reference of the window object
 let mainWindow;
 let aboutWindow;
 let preferencesWindow;
+let settingsFilePath;
+let mcpProcess = null;
 
 // Check if running in development mode
 const isDev = process.argv.includes('--dev');
+
+function getSettingsFilePath() {
+    if (!settingsFilePath) {
+        settingsFilePath = path.join(app.getPath('userData'), 'settings.json');
+    }
+    return settingsFilePath;
+}
+
+async function readSettingsFromRenderer() {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+        return {};
+    }
+    try {
+        return await mainWindow.webContents.executeJavaScript(`
+            (function () {
+                return {
+                    provider: localStorage.getItem('aiProvider') || 'anthropic',
+                    anthropicKey: localStorage.getItem('anthropicApiKey') || '',
+                    openaiKey: localStorage.getItem('openaiApiKey') || '',
+                    googleKey: localStorage.getItem('googleApiKey') || '',
+                    anthropicModel: localStorage.getItem('anthropicModel') || '',
+                    openaiModel: localStorage.getItem('openaiModel') || '',
+                    googleModel: localStorage.getItem('googleModel') || ''
+                };
+            })();
+        `);
+    } catch {
+        return {};
+    }
+}
+
+function pushSettingsToRenderer(settings) {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send('apply-settings', normalizeSettings(settings));
+}
 
 function showAboutWindow() {
     // If already open, focus it
@@ -215,6 +254,10 @@ function createWindow() {
 
     // Load the index.html of the app
     mainWindow.loadFile('index.html');
+    mainWindow.webContents.on('did-finish-load', () => {
+        const persisted = loadSettings(getSettingsFilePath());
+        pushSettingsToRenderer(persisted);
+    });
 
     // Show window when ready to prevent visual flash
     mainWindow.once('ready-to-show', () => {
@@ -277,7 +320,7 @@ function createMenu() {
                     label: 'New Project',
                     accelerator: 'CmdOrCtrl+N',
                     click: () => {
-                        mainWindow.webContents.executeJavaScript('createProject()');
+                        mainWindow.webContents.executeJavaScript('createProjectFromElectron()');
                     }
                 },
                 { type: 'separator' },
@@ -310,7 +353,7 @@ function createMenu() {
                                 return { dataUrl, name };
                             });
                             const filesData = await Promise.all(fileDataPromises);
-                            mainWindow.webContents.executeJavaScript(`handleFilesFromElectron(${JSON.stringify(filesData)})`);
+                            mainWindow.webContents.send('import-files', filesData);
                         }
                     }
                 },
@@ -412,6 +455,7 @@ function createMenu() {
 
 // This method will be called when Electron has finished initialization
 app.whenReady().then(() => {
+    getSettingsFilePath();
     createWindow();
 
     // On macOS, re-create window when dock icon is clicked
@@ -420,6 +464,14 @@ app.whenReady().then(() => {
             createWindow();
         }
     });
+});
+
+// Clean up MCP server on quit
+app.on('before-quit', () => {
+    if (mcpProcess) {
+        mcpProcess.kill();
+        mcpProcess = null;
+    }
 });
 
 // Quit when all windows are closed (except on macOS)
@@ -443,51 +495,22 @@ ipcMain.handle('show-open-dialog', async (event, options) => {
 
 // Handle settings communication between preferences window and main app
 ipcMain.handle('get-settings', async () => {
-    // Get settings from main window's localStorage via executeJavaScript
-    // Uses llmProviders from llm.js for default model values
-    try {
-        const settings = await mainWindow.webContents.executeJavaScript(`
-            JSON.stringify({
-                provider: localStorage.getItem('aiProvider') || 'anthropic',
-                anthropicKey: localStorage.getItem('anthropicApiKey') || '',
-                openaiKey: localStorage.getItem('openaiApiKey') || '',
-                googleKey: localStorage.getItem('googleApiKey') || '',
-                anthropicModel: localStorage.getItem('anthropicModel') || llmProviders.anthropic.defaultModel,
-                openaiModel: localStorage.getItem('openaiModel') || llmProviders.openai.defaultModel,
-                googleModel: localStorage.getItem('googleModel') || llmProviders.google.defaultModel
-            })
-        `);
-        return JSON.parse(settings);
-    } catch (e) {
-        // Fallback defaults if llmProviders not available
-        return {
-            provider: 'anthropic',
-            anthropicKey: '',
-            openaiKey: '',
-            googleKey: '',
-            anthropicModel: '',
-            openaiModel: '',
-            googleModel: ''
-        };
+    const persisted = loadSettings(getSettingsFilePath());
+    const hasPersistedSecrets = ['anthropicKey', 'openaiKey', 'googleKey']
+        .some((key) => typeof persisted[key] === 'string' && persisted[key].length > 0);
+    if (hasPersistedSecrets) {
+        return persisted;
     }
+    const rendererSettings = await readSettingsFromRenderer();
+    const normalized = normalizeSettings(rendererSettings, persisted);
+    saveSettings(getSettingsFilePath(), normalized);
+    return normalized;
 });
 
 ipcMain.handle('save-settings', async (event, settings) => {
-    // Save settings to main window's localStorage
     try {
-        await mainWindow.webContents.executeJavaScript(`
-            localStorage.setItem('aiProvider', '${settings.provider}');
-            localStorage.setItem('anthropicApiKey', '${settings.anthropicKey}');
-            localStorage.setItem('openaiApiKey', '${settings.openaiKey}');
-            localStorage.setItem('googleApiKey', '${settings.googleKey}');
-            localStorage.setItem('anthropicModel', '${settings.anthropicModel}');
-            localStorage.setItem('openaiModel', '${settings.openaiModel}');
-            localStorage.setItem('googleModel', '${settings.googleModel}');
-            // Update the UI if settings modal functions exist
-            if (typeof loadSettingsFromStorage === 'function') {
-                loadSettingsFromStorage();
-            }
-        `);
+        const normalized = saveSettings(getSettingsFilePath(), settings);
+        pushSettingsToRenderer(normalized);
         return { success: true };
     } catch (e) {
         return { success: false, error: e.message };
@@ -503,4 +526,75 @@ ipcMain.handle('get-llm-providers', async () => {
         // Fallback if llmProviders is not available
         return null;
     }
+});
+
+// MCP Server management
+const mcpServerPath = path.resolve(__dirname, '..', 'mcp', 'server.js');
+const appRoot = path.resolve(__dirname, '..');
+
+ipcMain.handle('mcp-start', async () => {
+    if (mcpProcess) {
+        return { success: false, error: 'MCP server is already running' };
+    }
+    try {
+        mcpProcess = spawn(process.execPath, [mcpServerPath], {
+            env: { ...process.env, APPSCREEN_ROOT: appRoot },
+            stdio: ['pipe', 'pipe', 'pipe']
+        });
+
+        mcpProcess.stderr.on('data', (data) => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('mcp-log', data.toString());
+            }
+        });
+
+        mcpProcess.stdout.on('data', (data) => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('mcp-log', '[stdout] ' + data.toString());
+            }
+        });
+
+        mcpProcess.on('error', (err) => {
+            mcpProcess = null;
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('mcp-log', '[error] ' + err.message);
+                mainWindow.webContents.send('mcp-status-change', { running: false });
+            }
+        });
+
+        mcpProcess.on('exit', (code) => {
+            const pid = mcpProcess?.pid;
+            mcpProcess = null;
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('mcp-log', `[exit] Process exited with code ${code}`);
+                mainWindow.webContents.send('mcp-status-change', { running: false, pid, code });
+            }
+        });
+
+        return { success: true, pid: mcpProcess.pid };
+    } catch (e) {
+        mcpProcess = null;
+        return { success: false, error: e.message };
+    }
+});
+
+ipcMain.handle('mcp-stop', async () => {
+    if (!mcpProcess) {
+        return { success: false, error: 'MCP server is not running' };
+    }
+    try {
+        mcpProcess.kill();
+        mcpProcess = null;
+        return { success: true };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+});
+
+ipcMain.handle('mcp-status', async () => {
+    return {
+        running: mcpProcess !== null,
+        pid: mcpProcess?.pid || null,
+        serverPath: mcpServerPath
+    };
 });

@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "appscreen": {
+      "command": "node",
+      "args": [
+        "<ABSOLUTE_PATH_TO_APPSCREEN>/mcp/server.js"
+      ]
+    }
+  }
+}

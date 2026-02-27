@@ -21,6 +21,7 @@ const state = {
             },
             solid: '#1a1a2e',
             image: null,
+            imageSrc: null,
             imageFit: 'cover',
             imageBlur: 0,
             overlayColor: '#000000',
@@ -66,8 +67,23 @@ const state = {
             headlineStrikethrough: false,
             headlineColor: '#ffffff',
             position: 'top',
+            offsetX: 50,
             offsetY: 12,
+            textRotation: 0,
             lineHeight: 110,
+            textShadow: {
+                enabled: false,
+                color: '#000000',
+                blur: 10,
+                x: 2,
+                y: 2,
+                opacity: 50
+            },
+            textOutline: {
+                enabled: false,
+                color: '#000000',
+                width: 2
+            },
             subheadlineEnabled: false,
             subheadlines: { en: '' },
             subheadlineLanguages: ['en'],
@@ -83,6 +99,9 @@ const state = {
         }
     }
 };
+
+// Batch apply mode — when active, setting changes apply to all screenshots
+let batchApply = false;
 
 // Helper functions to get/set current screenshot settings
 function getCurrentScreenshot() {
@@ -111,42 +130,74 @@ function formatValue(num) {
     return Number.isInteger(rounded) ? rounded.toString() : rounded.toFixed(1);
 }
 
-function setBackground(key, value) {
-    const screenshot = getCurrentScreenshot();
-    if (screenshot) {
-        if (key.includes('.')) {
-            const parts = key.split('.');
-            let obj = screenshot.background;
-            for (let i = 0; i < parts.length - 1; i++) {
-                obj = obj[parts[i]];
-            }
-            obj[parts[parts.length - 1]] = value;
-        } else {
-            screenshot.background[key] = value;
+// Escape untrusted text before injecting into HTML templates
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function applyBackgroundToScreenshot(screenshot, key, value) {
+    if (key.includes('.')) {
+        const parts = key.split('.');
+        let obj = screenshot.background;
+        for (let i = 0; i < parts.length - 1; i++) {
+            obj = obj[parts[i]];
         }
+        obj[parts[parts.length - 1]] = value;
+    } else {
+        screenshot.background[key] = value;
+        if (key === 'image') {
+            screenshot.background.imageSrc = value?.src || null;
+        }
+    }
+}
+
+function setBackground(key, value) {
+    if (batchApply && state.screenshots.length > 0) {
+        state.screenshots.forEach(s => applyBackgroundToScreenshot(s, key, value));
+    } else {
+        const screenshot = getCurrentScreenshot();
+        if (screenshot) applyBackgroundToScreenshot(screenshot, key, value);
+    }
+}
+
+function applyScreenshotSettingToScreenshot(screenshot, key, value) {
+    if (key.includes('.')) {
+        const parts = key.split('.');
+        let obj = screenshot.screenshot;
+        for (let i = 0; i < parts.length - 1; i++) {
+            obj = obj[parts[i]];
+        }
+        obj[parts[parts.length - 1]] = value;
+    } else {
+        screenshot.screenshot[key] = value;
     }
 }
 
 function setScreenshotSetting(key, value) {
-    const screenshot = getCurrentScreenshot();
-    if (screenshot) {
-        if (key.includes('.')) {
-            const parts = key.split('.');
-            let obj = screenshot.screenshot;
-            for (let i = 0; i < parts.length - 1; i++) {
-                obj = obj[parts[i]];
-            }
-            obj[parts[parts.length - 1]] = value;
-        } else {
-            screenshot.screenshot[key] = value;
-        }
+    if (batchApply && state.screenshots.length > 0) {
+        state.screenshots.forEach(s => applyScreenshotSettingToScreenshot(s, key, value));
+    } else {
+        const screenshot = getCurrentScreenshot();
+        if (screenshot) applyScreenshotSettingToScreenshot(screenshot, key, value);
     }
 }
 
+// Keys that are text content (not styling) — excluded from batch apply
+const textContentKeys = new Set(['headlines', 'subheadlines', 'currentHeadlineLang', 'currentSubheadlineLang', 'headlineLanguages', 'subheadlineLanguages']);
+
 function setTextSetting(key, value) {
-    const screenshot = getCurrentScreenshot();
-    if (screenshot) {
-        screenshot.text[key] = value;
+    if (batchApply && state.screenshots.length > 0 && !textContentKeys.has(key)) {
+        state.screenshots.forEach(s => { s.text[key] = value; });
+    } else {
+        const screenshot = getCurrentScreenshot();
+        if (screenshot) {
+            screenshot.text[key] = value;
+        }
     }
 }
 
@@ -800,6 +851,18 @@ const canvasWrapper = document.getElementById('canvas-wrapper');
 let isSliding = false;
 let skipSidePreviewRender = false;  // Flag to skip re-rendering side previews after pre-render
 
+// Drag-to-move screenshot on canvas
+let isDragging = false;
+let dragStartMouseX = 0;
+let dragStartMouseY = 0;
+let dragStartSettingX = 0;
+let dragStartSettingY = 0;
+let isTextDragging = false;
+let textDragStartMouseX = 0;
+let textDragStartMouseY = 0;
+let textDragStartOffsetX = 0;
+let textDragStartOffsetY = 0;
+
 // Two-finger horizontal swipe to navigate between screenshots
 let swipeAccumulator = 0;
 const SWIPE_THRESHOLD = 50; // Minimum accumulated delta to trigger navigation
@@ -848,12 +911,285 @@ const noScreenshot = document.getElementById('no-screenshot');
 // IndexedDB for larger storage (can store hundreds of MB vs localStorage's 5-10MB)
 let db = null;
 const DB_NAME = 'AppStoreScreenshotGenerator';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const PROJECTS_STORE = 'projects';
 const META_STORE = 'meta';
+const SAVE_DEBOUNCE_MS = 250;
 
 let currentProjectId = 'default';
 let projects = [{ id: 'default', name: 'Default Project', screenshotCount: 0 }];
+let saveDebounceTimer = null;
+let saveQueued = false;
+
+// Undo/Redo history
+let undoHistory = [];
+let historyIndex = -1;
+let isRestoringHistory = false;
+let historyCommitTimer = null;
+const MAX_HISTORY = 50;
+const HISTORY_DEBOUNCE_MS = 500;
+
+function cloneBackground(bg) {
+    if (!bg) return null;
+    const serialized = JSON.parse(JSON.stringify({
+        ...bg,
+        image: null,
+        imageSrc: null
+    }));
+    serialized.image = bg.image;
+    serialized.imageSrc = bg.imageSrc;
+    return serialized;
+}
+
+function cloneScreenshot(s) {
+    const clone = {
+        name: s.name,
+        deviceType: s.deviceType,
+        image: s.image,
+        background: cloneBackground(s.background),
+        screenshot: JSON.parse(JSON.stringify(s.screenshot)),
+        text: JSON.parse(JSON.stringify(s.text)),
+        overrides: s.overrides ? JSON.parse(JSON.stringify(s.overrides)) : {},
+        localizedImages: {}
+    };
+    if (s.localizedImages) {
+        Object.keys(s.localizedImages).forEach(lang => {
+            const ld = s.localizedImages[lang];
+            if (ld) {
+                clone.localizedImages[lang] = {
+                    image: ld.image,
+                    src: ld.src,
+                    name: ld.name
+                };
+            }
+        });
+    }
+    return clone;
+}
+
+function cloneDefaults(defaults) {
+    return {
+        background: cloneBackground(defaults.background),
+        screenshot: JSON.parse(JSON.stringify(defaults.screenshot)),
+        text: JSON.parse(JSON.stringify(defaults.text))
+    };
+}
+
+function captureSnapshot() {
+    return {
+        selectedIndex: state.selectedIndex,
+        outputDevice: state.outputDevice,
+        currentLanguage: state.currentLanguage,
+        projectLanguages: [...state.projectLanguages],
+        customWidth: state.customWidth,
+        customHeight: state.customHeight,
+        defaults: cloneDefaults(state.defaults),
+        screenshots: state.screenshots.map(s => cloneScreenshot(s))
+    };
+}
+
+function commitHistory() {
+    if (isRestoringHistory) return;
+
+    const snapshot = captureSnapshot();
+
+    undoHistory.length = historyIndex + 1;
+    undoHistory.push(snapshot);
+    historyIndex = undoHistory.length - 1;
+
+    if (undoHistory.length > MAX_HISTORY) {
+        const excess = undoHistory.length - MAX_HISTORY;
+        undoHistory.splice(0, excess);
+        historyIndex -= excess;
+    }
+
+    updateUndoRedoButtons();
+}
+
+function scheduleHistoryCommit() {
+    if (isRestoringHistory) return;
+    if (historyCommitTimer) clearTimeout(historyCommitTimer);
+    historyCommitTimer = setTimeout(() => {
+        historyCommitTimer = null;
+        commitHistory();
+    }, HISTORY_DEBOUNCE_MS);
+}
+
+function flushHistoryCommit() {
+    if (historyCommitTimer) {
+        clearTimeout(historyCommitTimer);
+        historyCommitTimer = null;
+        commitHistory();
+    }
+}
+
+function restoreSnapshot(snapshot) {
+    isRestoringHistory = true;
+
+    state.selectedIndex = snapshot.selectedIndex;
+    state.outputDevice = snapshot.outputDevice;
+    state.currentLanguage = snapshot.currentLanguage;
+    state.projectLanguages = [...snapshot.projectLanguages];
+    state.customWidth = snapshot.customWidth;
+    state.customHeight = snapshot.customHeight;
+    state.defaults = cloneDefaults(snapshot.defaults);
+    state.screenshots = snapshot.screenshots.map(s => cloneScreenshot(s));
+
+    updateScreenshotList();
+    syncUIWithState();
+    updateGradientStopsUI();
+    updateCanvas();
+
+    isRestoringHistory = false;
+}
+
+function undo() {
+    if (historyIndex <= 0) return;
+    flushHistoryCommit();
+    historyIndex--;
+    restoreSnapshot(undoHistory[historyIndex]);
+    updateUndoRedoButtons();
+}
+
+function redo() {
+    if (historyIndex >= undoHistory.length - 1) return;
+    historyIndex++;
+    restoreSnapshot(undoHistory[historyIndex]);
+    updateUndoRedoButtons();
+}
+
+function resetHistory() {
+    if (historyCommitTimer) {
+        clearTimeout(historyCommitTimer);
+        historyCommitTimer = null;
+    }
+    undoHistory = [];
+    historyIndex = -1;
+    commitHistory();
+}
+
+function updateUndoRedoButtons() {
+    const undoBtn = document.getElementById('undo-btn');
+    const redoBtn = document.getElementById('redo-btn');
+    if (undoBtn) {
+        undoBtn.disabled = historyIndex <= 0;
+        undoBtn.classList.toggle('disabled', historyIndex <= 0);
+    }
+    if (redoBtn) {
+        redoBtn.disabled = historyIndex >= undoHistory.length - 1;
+        redoBtn.classList.toggle('disabled', historyIndex >= undoHistory.length - 1);
+    }
+}
+
+function queueStateSave() {
+    saveQueued = true;
+    if (saveDebounceTimer) {
+        clearTimeout(saveDebounceTimer);
+    }
+    saveDebounceTimer = setTimeout(() => {
+        saveDebounceTimer = null;
+        persistStateNow();
+    }, SAVE_DEBOUNCE_MS);
+}
+
+function flushStateSave() {
+    if (saveDebounceTimer) {
+        clearTimeout(saveDebounceTimer);
+        saveDebounceTimer = null;
+    }
+    persistStateNow();
+}
+
+function createDefaultProjectName() {
+    let candidateIndex = projects.length + 1;
+    let candidate = `Project ${candidateIndex}`;
+    const existing = new Set(projects.map(p => p.name));
+    while (existing.has(candidate)) {
+        candidateIndex++;
+        candidate = `Project ${candidateIndex}`;
+    }
+    return candidate;
+}
+
+function makeSerializableBackground(background) {
+    const bg = background || {};
+    const copy = JSON.parse(JSON.stringify({
+        ...bg,
+        image: null,
+        imageSrc: bg.imageSrc || bg.image?.src || null
+    }));
+    return copy;
+}
+
+function hydrateBackground(background, onHydrated) {
+    const bg = {
+        ...state.defaults.background,
+        ...(background || {})
+    };
+    bg.image = null;
+    // Backward migration: keep src if older records stored a raw image object.
+    bg.imageSrc = bg.imageSrc || background?.image?.src || null;
+
+    if (bg.imageSrc) {
+        const img = new Image();
+        img.onload = () => {
+            bg.image = img;
+            if (typeof onHydrated === 'function') {
+                onHydrated();
+            }
+        };
+        img.src = bg.imageSrc;
+    }
+
+    return bg;
+}
+
+function ensureBackgroundImageLoaded(background, onHydrated) {
+    if (!background) return;
+    if (background.image) return;
+    if (!background.imageSrc) return;
+    const img = new Image();
+    img.onload = () => {
+        background.image = img;
+        if (typeof onHydrated === 'function') {
+            onHydrated();
+        }
+    };
+    img.src = background.imageSrc;
+}
+
+function applySettingsFromElectron(settings) {
+    if (!settings || typeof settings !== 'object') return;
+    const map = [
+        ['aiProvider', settings.provider],
+        ['anthropicApiKey', settings.anthropicKey],
+        ['openaiApiKey', settings.openaiKey],
+        ['googleApiKey', settings.googleKey],
+        ['anthropicModel', settings.anthropicModel],
+        ['openaiModel', settings.openaiModel],
+        ['googleModel', settings.googleModel]
+    ];
+    map.forEach(([key, value]) => {
+        if (typeof value === 'string') {
+            localStorage.setItem(key, value);
+        }
+    });
+    if (typeof loadSettingsFromStorage === 'function') {
+        loadSettingsFromStorage();
+    }
+}
+
+if (window.electronAPI?.onApplySettings) {
+    window.electronAPI.onApplySettings((settings) => {
+        applySettingsFromElectron(settings);
+    });
+}
+
+if (window.electronAPI?.onImportFiles) {
+    window.electronAPI.onImportFiles((filesData) => {
+        handleFilesFromElectron(filesData);
+    });
+}
 
 function openDatabase() {
     return new Promise((resolve, reject) => {
@@ -967,7 +1303,7 @@ function updateProjectSelector() {
         const screenshotCount = project.id === currentProjectId ? state.screenshots.length : (project.screenshotCount || 0);
 
         option.innerHTML = `
-            <span class="project-option-name">${project.name}</span>
+            <span class="project-option-name">${escapeHtml(project.name)}</span>
             <span class="project-option-meta">${screenshotCount} screenshot${screenshotCount !== 1 ? 's' : ''}</span>
         `;
 
@@ -991,11 +1327,13 @@ async function init() {
         await loadState();
         syncUIWithState();
         updateCanvas();
+        resetHistory();
     } catch (e) {
         console.error('Initialization error:', e);
         // Continue with defaults
         syncUIWithState();
         updateCanvas();
+        resetHistory();
     }
 }
 
@@ -1005,13 +1343,22 @@ function initSync() {
     initFontPicker();
     updateGradientStopsUI();
     updateCanvas();
+    window.addEventListener('beforeunload', () => {
+        flushStateSave();
+    });
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            flushStateSave();
+        }
+    });
     // Then load saved data asynchronously
     init();
 }
 
-// Save state to IndexedDB for current project
-function saveState() {
+// Persist immediately to IndexedDB for current project
+function persistStateNow() {
     if (!db) return;
+    saveQueued = false;
 
     // Convert screenshots to base64 for storage, including per-screenshot settings and localized images
     const screenshotsToSave = state.screenshots.map(s => {
@@ -1034,7 +1381,7 @@ function saveState() {
             name: s.name,
             deviceType: s.deviceType,
             localizedImages: localizedImages,
-            background: s.background,
+            background: makeSerializableBackground(s.background),
             screenshot: s.screenshot,
             text: s.text,
             overrides: s.overrides
@@ -1043,7 +1390,7 @@ function saveState() {
 
     const stateToSave = {
         id: currentProjectId,
-        formatVersion: 2, // Version 2: new 3D positioning formula
+        formatVersion: 3, // Version 3: background image serialization and 3D formula
         screenshots: screenshotsToSave,
         selectedIndex: state.selectedIndex,
         outputDevice: state.outputDevice,
@@ -1051,7 +1398,10 @@ function saveState() {
         customHeight: state.customHeight,
         currentLanguage: state.currentLanguage,
         projectLanguages: state.projectLanguages,
-        defaults: state.defaults
+        defaults: {
+            ...state.defaults,
+            background: makeSerializableBackground(state.defaults.background)
+        }
     };
 
     // Update screenshot count in project metadata
@@ -1068,6 +1418,11 @@ function saveState() {
     } catch (e) {
         console.error('Error saving state:', e);
     }
+}
+
+// Save state to IndexedDB for current project (debounced)
+function saveState() {
+    queueStateSave();
 }
 
 // Migrate 3D positions from old formula to new formula
@@ -1179,7 +1534,10 @@ function loadState() {
                                                     name: s.name,
                                                     deviceType: s.deviceType,
                                                     localizedImages: localizedImages,
-                                                    background: s.background || JSON.parse(JSON.stringify(migratedBackground)),
+                                                    background: hydrateBackground(
+                                                        s.background || JSON.parse(JSON.stringify(migratedBackground)),
+                                                        () => updateCanvas()
+                                                    ),
                                                     screenshot: screenshotSettings,
                                                     text: s.text || JSON.parse(JSON.stringify(migratedText)),
                                                     overrides: s.overrides || {}
@@ -1222,7 +1580,10 @@ function loadState() {
                                         name: s.name,
                                         deviceType: s.deviceType,
                                         localizedImages: localizedImages,
-                                        background: s.background || JSON.parse(JSON.stringify(migratedBackground)),
+                                        background: hydrateBackground(
+                                            s.background || JSON.parse(JSON.stringify(migratedBackground)),
+                                            () => updateCanvas()
+                                        ),
                                         screenshot: screenshotSettings,
                                         text: s.text || JSON.parse(JSON.stringify(migratedText)),
                                         overrides: s.overrides || {}
@@ -1265,9 +1626,13 @@ function loadState() {
 
                     // Load defaults (new format) or use migrated settings
                     if (parsed.defaults) {
-                        state.defaults = parsed.defaults;
+                        state.defaults = {
+                            ...state.defaults,
+                            ...parsed.defaults
+                        };
+                        state.defaults.background = hydrateBackground(parsed.defaults.background, () => updateCanvas());
                     } else {
-                        state.defaults.background = migratedBackground;
+                        state.defaults.background = hydrateBackground(migratedBackground, () => updateCanvas());
                         state.defaults.screenshot = migratedScreenshot;
                         state.defaults.text = migratedText;
                     }
@@ -1307,7 +1672,7 @@ function hideMigrationPrompt() {
 
 function convertProject() {
     // Project is already converted in memory, just save it
-    saveState();
+    flushStateSave();
     hideMigrationPrompt();
 }
 
@@ -1332,6 +1697,7 @@ function resetStateToDefaults() {
             },
             solid: '#1a1a2e',
             image: null,
+            imageSrc: null,
             imageFit: 'cover',
             imageBlur: 0,
             overlayColor: '#000000',
@@ -1373,8 +1739,23 @@ function resetStateToDefaults() {
             headlineStrikethrough: false,
             headlineColor: '#ffffff',
             position: 'top',
+            offsetX: 50,
             offsetY: 12,
+            textRotation: 0,
             lineHeight: 110,
+            textShadow: {
+                enabled: false,
+                color: '#000000',
+                blur: 10,
+                x: 2,
+                y: 2,
+                opacity: 50
+            },
+            textOutline: {
+                enabled: false,
+                color: '#000000',
+                width: 2
+            },
             subheadlines: { en: '' },
             subheadlineLanguages: ['en'],
             currentSubheadlineLang: 'en',
@@ -1393,7 +1774,7 @@ function resetStateToDefaults() {
 // Switch to a different project
 async function switchProject(projectId) {
     // Save current project first
-    saveState();
+    flushStateSave();
 
     currentProjectId = projectId;
     saveProjectsMeta();
@@ -1407,15 +1788,21 @@ async function switchProject(projectId) {
     updateGradientStopsUI();
     updateProjectSelector();
     updateCanvas();
+    resetHistory();
 }
 
 // Create a new project
 async function createProject(name) {
+    const normalizedName = (name || '').trim() || createDefaultProjectName();
     const id = 'project_' + Date.now();
-    projects.push({ id, name, screenshotCount: 0 });
+    projects.push({ id, name: normalizedName, screenshotCount: 0 });
     saveProjectsMeta();
     await switchProject(id);
     updateProjectSelector();
+}
+
+async function createProjectFromElectron() {
+    return createProject(createDefaultProjectName());
 }
 
 // Rename current project
@@ -1443,6 +1830,7 @@ async function deleteProject() {
 
     // Delete from IndexedDB
     if (db) {
+        flushStateSave();
         const transaction = db.transaction([PROJECTS_STORE], 'readwrite');
         const store = transaction.objectStore(PROJECTS_STORE);
         store.delete(currentProjectId);
@@ -1491,6 +1879,127 @@ async function duplicateProject(sourceProjectId, customName) {
             };
         };
     });
+}
+
+function exportProjectAsJSON() {
+    flushStateSave();
+
+    const project = projects.find(p => p.id === currentProjectId);
+    const projectName = project ? project.name : 'project';
+
+    // Build the same structure as persistStateNow
+    const screenshotsToSave = state.screenshots.map(s => {
+        const localizedImages = {};
+        if (s.localizedImages) {
+            Object.keys(s.localizedImages).forEach(lang => {
+                const langData = s.localizedImages[lang];
+                if (langData?.src) {
+                    localizedImages[lang] = {
+                        src: langData.src,
+                        name: langData.name
+                    };
+                }
+            });
+        }
+        return {
+            src: s.image?.src || '',
+            name: s.name,
+            deviceType: s.deviceType,
+            localizedImages: localizedImages,
+            background: makeSerializableBackground(s.background),
+            screenshot: s.screenshot,
+            text: s.text,
+            overrides: s.overrides
+        };
+    });
+
+    const exportData = {
+        appscreen: true,
+        version: 1,
+        exportDate: new Date().toISOString(),
+        projectName: projectName,
+        formatVersion: 3,
+        screenshots: screenshotsToSave,
+        selectedIndex: state.selectedIndex,
+        outputDevice: state.outputDevice,
+        customWidth: state.customWidth,
+        customHeight: state.customHeight,
+        currentLanguage: state.currentLanguage,
+        projectLanguages: state.projectLanguages,
+        defaults: {
+            ...state.defaults,
+            background: makeSerializableBackground(state.defaults.background)
+        }
+    };
+
+    const json = JSON.stringify(exportData);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = projectName.replace(/[^a-zA-Z0-9_-]/g, '_') + '.appscreen.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    showAppAlert('Project exported successfully', 'success');
+}
+
+async function importProjectFromJSON(file) {
+    try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+
+        // Validate it's an appscreen project file
+        if (!data.appscreen || !data.screenshots || !Array.isArray(data.screenshots)) {
+            showAppAlert('Invalid project file. Expected an .appscreen.json file.', 'error');
+            return;
+        }
+
+        // Create a new project with the imported data
+        const projectName = data.projectName || file.name.replace(/\.appscreen\.json$/i, '').replace(/\.json$/i, '');
+        const newId = 'project_' + Date.now();
+
+        projects.push({ id: newId, name: projectName, screenshotCount: data.screenshots.length });
+        saveProjectsMeta();
+
+        // Build the project record for IndexedDB
+        const projectRecord = {
+            id: newId,
+            formatVersion: data.formatVersion || 3,
+            screenshots: data.screenshots,
+            selectedIndex: data.selectedIndex || 0,
+            outputDevice: data.outputDevice || 'iphone-6.9',
+            customWidth: data.customWidth || 1290,
+            customHeight: data.customHeight || 2796,
+            currentLanguage: data.currentLanguage || 'en',
+            projectLanguages: data.projectLanguages || ['en'],
+            defaults: data.defaults || undefined
+        };
+
+        if (!db) {
+            showAppAlert('Database not available', 'error');
+            return;
+        }
+
+        const transaction = db.transaction([PROJECTS_STORE], 'readwrite');
+        const store = transaction.objectStore(PROJECTS_STORE);
+        store.put(projectRecord);
+
+        transaction.oncomplete = async () => {
+            await switchProject(newId);
+            updateProjectSelector();
+            showAppAlert('Project "' + escapeHtml(projectName) + '" imported successfully', 'success');
+        };
+
+        transaction.onerror = () => {
+            showAppAlert('Failed to save imported project', 'error');
+        };
+    } catch (e) {
+        console.error('Import error:', e);
+        showAppAlert('Failed to import project: ' + e.message, 'error');
+    }
 }
 
 function duplicateScreenshot(index) {
@@ -1661,8 +2170,36 @@ function syncUIWithState() {
     });
     document.getElementById('text-offset-y').value = txt.offsetY;
     document.getElementById('text-offset-y-value').textContent = formatValue(txt.offsetY) + '%';
+    const offsetX = txt.offsetX !== undefined ? txt.offsetX : 50;
+    document.getElementById('text-offset-x').value = offsetX;
+    document.getElementById('text-offset-x-value').textContent = formatValue(offsetX) + '%';
+    const textRotation = txt.textRotation || 0;
+    document.getElementById('text-rotation').value = textRotation;
+    document.getElementById('text-rotation-value').textContent = textRotation + '°';
     document.getElementById('line-height').value = txt.lineHeight;
     document.getElementById('line-height-value').textContent = formatValue(txt.lineHeight) + '%';
+
+    // Text Shadow
+    const ts = txt.textShadow || { enabled: false, color: '#000000', blur: 10, x: 2, y: 2, opacity: 50 };
+    document.getElementById('text-shadow-toggle').classList.toggle('active', ts.enabled);
+    document.getElementById('text-shadow-color').value = ts.color;
+    document.getElementById('text-shadow-color-hex').value = ts.color;
+    document.getElementById('text-shadow-blur').value = ts.blur;
+    document.getElementById('text-shadow-blur-value').textContent = ts.blur + 'px';
+    document.getElementById('text-shadow-x').value = ts.x;
+    document.getElementById('text-shadow-x-value').textContent = ts.x + 'px';
+    document.getElementById('text-shadow-y').value = ts.y;
+    document.getElementById('text-shadow-y-value').textContent = ts.y + 'px';
+    document.getElementById('text-shadow-opacity').value = ts.opacity;
+    document.getElementById('text-shadow-opacity-value').textContent = ts.opacity + '%';
+
+    // Text Outline
+    const to = txt.textOutline || { enabled: false, color: '#000000', width: 2 };
+    document.getElementById('text-outline-toggle').classList.toggle('active', to.enabled);
+    document.getElementById('text-outline-color').value = to.color;
+    document.getElementById('text-outline-color-hex').value = to.color;
+    document.getElementById('text-outline-width').value = to.width;
+    document.getElementById('text-outline-width-value').textContent = to.width + 'px';
     const currentSubheadline = txt.subheadlines ? (txt.subheadlines[txt.currentSubheadlineLang || 'en'] || '') : (txt.subheadline || '');
     document.getElementById('subheadline-text').value = currentSubheadline;
     document.getElementById('subheadline-font').value = txt.subheadlineFont || txt.headlineFont;
@@ -1721,6 +2258,131 @@ function syncUIWithState() {
 }
 
 function setupEventListeners() {
+    // Undo/Redo keyboard shortcuts
+    document.addEventListener('keydown', (e) => {
+        const tag = document.activeElement?.tagName?.toLowerCase();
+        if (tag === 'input' || tag === 'textarea' || document.activeElement?.isContentEditable) return;
+
+        const isCtrl = e.ctrlKey || e.metaKey;
+        if (!isCtrl) return;
+
+        if (e.key.toLowerCase() === 'z' && !e.shiftKey) {
+            e.preventDefault();
+            undo();
+        } else if (e.key.toLowerCase() === 'z' && e.shiftKey) {
+            e.preventDefault();
+            redo();
+        } else if (e.key.toLowerCase() === 'y') {
+            e.preventDefault();
+            redo();
+        }
+    });
+
+    document.getElementById('undo-btn')?.addEventListener('click', () => undo());
+    document.getElementById('redo-btn')?.addEventListener('click', () => redo());
+
+    // Batch apply toggle
+    document.getElementById('batch-apply-toggle')?.addEventListener('click', () => {
+        batchApply = !batchApply;
+        document.getElementById('batch-apply-toggle').classList.toggle('active', batchApply);
+    });
+
+    // Drag-to-move screenshot or text on canvas
+    canvas.addEventListener('mousedown', (e) => {
+        if (state.screenshots.length === 0) return;
+        const ss = getScreenshotSettings();
+        if (ss.use3D) return;
+        const pt = canvasMouseToInternal(e);
+
+        // Check text hit first (text is rendered on top)
+        if (hitTestText(pt.x, pt.y)) {
+            const txt = getTextSettings();
+            isTextDragging = true;
+            textDragStartMouseX = pt.x;
+            textDragStartMouseY = pt.y;
+            textDragStartOffsetX = txt.offsetX !== undefined ? txt.offsetX : 50;
+            textDragStartOffsetY = txt.offsetY;
+            canvas.style.cursor = 'grabbing';
+            e.preventDefault();
+            return;
+        }
+
+        if (!hitTestScreenshot(pt.x, pt.y)) return;
+        isDragging = true;
+        dragStartMouseX = pt.x;
+        dragStartMouseY = pt.y;
+        dragStartSettingX = ss.x;
+        dragStartSettingY = ss.y;
+        canvas.style.cursor = 'grabbing';
+        e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (isTextDragging) {
+            const pt = canvasMouseToInternal(e);
+            const dims = getCanvasDimensions();
+            const deltaX = ((pt.x - textDragStartMouseX) / dims.width) * 100;
+            const deltaY = ((pt.y - textDragStartMouseY) / dims.height) * 100;
+            const txt = getTextSettings();
+            const newX = Math.max(0, Math.min(100, textDragStartOffsetX + deltaX));
+            const newY = txt.position === 'top'
+                ? Math.max(0, Math.min(100, textDragStartOffsetY + deltaY))
+                : Math.max(0, Math.min(100, textDragStartOffsetY - deltaY));
+            setTextValue('offsetX', Math.round(newX));
+            setTextValue('offsetY', Math.round(newY));
+            document.getElementById('text-offset-x').value = Math.round(newX);
+            document.getElementById('text-offset-x-value').textContent = Math.round(newX) + '%';
+            document.getElementById('text-offset-y').value = Math.round(newY);
+            document.getElementById('text-offset-y-value').textContent = Math.round(newY) + '%';
+            updateCanvas();
+            return;
+        }
+        if (!isDragging) return;
+        const pt = canvasMouseToInternal(e);
+        const dims = getCanvasDimensions();
+        const bounds = getScreenshotBounds();
+        if (!bounds) return;
+        const availW = dims.width - bounds.width;
+        const availH = dims.height - bounds.height;
+        const deltaX = availW !== 0 ? ((pt.x - dragStartMouseX) / availW) * 100 : 0;
+        const deltaY = availH !== 0 ? ((pt.y - dragStartMouseY) / availH) * 100 : 0;
+        const newX = dragStartSettingX + deltaX;
+        const newY = dragStartSettingY + deltaY;
+        setScreenshotSetting('x', Math.round(newX));
+        setScreenshotSetting('y', Math.round(newY));
+        document.getElementById('screenshot-x').value = Math.round(newX);
+        document.getElementById('screenshot-x-value').textContent = Math.round(newX) + '%';
+        document.getElementById('screenshot-y').value = Math.round(newY);
+        document.getElementById('screenshot-y-value').textContent = Math.round(newY) + '%';
+        updateCanvas();
+    });
+
+    document.addEventListener('mouseup', () => {
+        if (isTextDragging) {
+            isTextDragging = false;
+            canvas.style.cursor = '';
+            return;
+        }
+        if (!isDragging) return;
+        isDragging = false;
+        canvas.style.cursor = '';
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+        if (isDragging || isTextDragging) return;
+        if (state.screenshots.length === 0) return;
+        const ss = getScreenshotSettings();
+        if (ss.use3D) return;
+        const pt = canvasMouseToInternal(e);
+        if (hitTestText(pt.x, pt.y)) {
+            canvas.style.cursor = 'grab';
+        } else if (hitTestScreenshot(pt.x, pt.y)) {
+            canvas.style.cursor = 'grab';
+        } else {
+            canvas.style.cursor = '';
+        }
+    });
+
     // Collapsible toggle rows
     document.querySelectorAll('.toggle-row.collapsible').forEach(row => {
         row.addEventListener('click', (e) => {
@@ -1853,6 +2515,23 @@ function setupEventListeners() {
         document.getElementById('delete-project-message').textContent =
             `Are you sure you want to delete "${project ? project.name : 'this project'}"? This cannot be undone.`;
         document.getElementById('delete-project-modal').classList.add('visible');
+    });
+
+    // Export/Import project
+    document.getElementById('export-project-btn').addEventListener('click', () => {
+        exportProjectAsJSON();
+    });
+
+    document.getElementById('import-project-btn').addEventListener('click', () => {
+        document.getElementById('import-project-input').click();
+    });
+
+    document.getElementById('import-project-input').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file) {
+            importProjectFromJSON(file);
+            e.target.value = ''; // Reset so same file can be re-imported
+        }
     });
 
     // Project modal buttons
@@ -2103,6 +2782,9 @@ function setupEventListeners() {
         }
     });
 
+    // MCP Server modal
+    initMcpModal();
+
     // Output size dropdown
     const outputDropdown = document.getElementById('output-size-dropdown');
     const outputTrigger = document.getElementById('output-size-trigger');
@@ -2277,10 +2959,18 @@ function setupEventListeners() {
     document.getElementById('add-gradient-stop').addEventListener('click', () => {
         const bg = getBackground();
         const lastStop = bg.gradient.stops[bg.gradient.stops.length - 1];
-        bg.gradient.stops.push({
+        const newStop = {
             color: lastStop.color,
             position: Math.min(lastStop.position + 20, 100)
-        });
+        };
+        bg.gradient.stops.push({ ...newStop });
+        if (batchApply) {
+            state.screenshots.forEach(s => {
+                if (s.background !== bg) {
+                    s.background.gradient.stops.push({ ...newStop });
+                }
+            });
+        }
         // Deselect preset when adding a stop
         document.querySelectorAll('.preset-swatch').forEach(s => s.classList.remove('selected'));
         updateGradientStopsUI();
@@ -2571,9 +3261,103 @@ function setupEventListeners() {
         updateCanvas();
     });
 
+    document.getElementById('text-offset-x').addEventListener('input', (e) => {
+        setTextValue('offsetX', parseInt(e.target.value));
+        document.getElementById('text-offset-x-value').textContent = formatValue(e.target.value) + '%';
+        updateCanvas();
+    });
+
+    document.getElementById('text-rotation').addEventListener('input', (e) => {
+        setTextValue('textRotation', parseInt(e.target.value));
+        document.getElementById('text-rotation-value').textContent = e.target.value + '°';
+        updateCanvas();
+    });
+
     document.getElementById('line-height').addEventListener('input', (e) => {
         setTextValue('lineHeight', parseInt(e.target.value));
         document.getElementById('line-height-value').textContent = formatValue(e.target.value) + '%';
+        updateCanvas();
+    });
+
+    // Text Shadow controls
+    document.getElementById('text-shadow-toggle').addEventListener('click', () => {
+        const text = getTextSettings();
+        if (!text.textShadow) text.textShadow = { enabled: false, color: '#000000', blur: 10, x: 2, y: 2, opacity: 50 };
+        text.textShadow.enabled = !text.textShadow.enabled;
+        document.getElementById('text-shadow-toggle').classList.toggle('active', text.textShadow.enabled);
+        updateCanvas();
+        scheduleHistoryCommit();
+    });
+
+    document.getElementById('text-shadow-color').addEventListener('input', (e) => {
+        const text = getTextSettings();
+        if (text.textShadow) text.textShadow.color = e.target.value;
+        document.getElementById('text-shadow-color-hex').value = e.target.value;
+        updateCanvas();
+    });
+    document.getElementById('text-shadow-color-hex').addEventListener('change', (e) => {
+        const val = e.target.value;
+        if (/^#[0-9a-fA-F]{6}$/.test(val)) {
+            const text = getTextSettings();
+            if (text.textShadow) text.textShadow.color = val;
+            document.getElementById('text-shadow-color').value = val;
+            updateCanvas();
+        }
+    });
+    document.getElementById('text-shadow-blur').addEventListener('input', (e) => {
+        const text = getTextSettings();
+        if (text.textShadow) text.textShadow.blur = parseInt(e.target.value);
+        document.getElementById('text-shadow-blur-value').textContent = e.target.value + 'px';
+        updateCanvas();
+    });
+    document.getElementById('text-shadow-x').addEventListener('input', (e) => {
+        const text = getTextSettings();
+        if (text.textShadow) text.textShadow.x = parseInt(e.target.value);
+        document.getElementById('text-shadow-x-value').textContent = e.target.value + 'px';
+        updateCanvas();
+    });
+    document.getElementById('text-shadow-y').addEventListener('input', (e) => {
+        const text = getTextSettings();
+        if (text.textShadow) text.textShadow.y = parseInt(e.target.value);
+        document.getElementById('text-shadow-y-value').textContent = e.target.value + 'px';
+        updateCanvas();
+    });
+    document.getElementById('text-shadow-opacity').addEventListener('input', (e) => {
+        const text = getTextSettings();
+        if (text.textShadow) text.textShadow.opacity = parseInt(e.target.value);
+        document.getElementById('text-shadow-opacity-value').textContent = e.target.value + '%';
+        updateCanvas();
+    });
+
+    // Text Outline controls
+    document.getElementById('text-outline-toggle').addEventListener('click', () => {
+        const text = getTextSettings();
+        if (!text.textOutline) text.textOutline = { enabled: false, color: '#000000', width: 2 };
+        text.textOutline.enabled = !text.textOutline.enabled;
+        document.getElementById('text-outline-toggle').classList.toggle('active', text.textOutline.enabled);
+        updateCanvas();
+        scheduleHistoryCommit();
+    });
+
+    document.getElementById('text-outline-color').addEventListener('input', (e) => {
+        const text = getTextSettings();
+        if (text.textOutline) text.textOutline.color = e.target.value;
+        document.getElementById('text-outline-color-hex').value = e.target.value;
+        updateCanvas();
+    });
+    document.getElementById('text-outline-color-hex').addEventListener('change', (e) => {
+        const val = e.target.value;
+        if (/^#[0-9a-fA-F]{6}$/.test(val)) {
+            const text = getTextSettings();
+            if (text.textOutline) text.textOutline.color = val;
+            document.getElementById('text-outline-color').value = val;
+            updateCanvas();
+        }
+    });
+    document.getElementById('text-outline-width').addEventListener('input', (e) => {
+        const text = getTextSettings();
+        if (text.textOutline) text.textOutline.width = parseInt(e.target.value);
+        document.getElementById('text-outline-width-value').textContent = e.target.value + 'px';
         updateCanvas();
     });
 
@@ -2623,6 +3407,26 @@ function setupEventListeners() {
     // Export buttons
     document.getElementById('export-current').addEventListener('click', exportCurrent);
     document.getElementById('export-all').addEventListener('click', exportAll);
+
+    // Export All Sizes
+    document.getElementById('export-all-sizes').addEventListener('click', () => {
+        if (state.screenshots.length === 0) {
+            showAppAlert('Please upload screenshots first', 'info');
+            return;
+        }
+        document.getElementById('export-sizes-modal').classList.add('visible');
+    });
+
+    document.getElementById('export-sizes-cancel').addEventListener('click', () => {
+        document.getElementById('export-sizes-modal').classList.remove('visible');
+    });
+
+    document.querySelectorAll('.export-preset-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            document.getElementById('export-sizes-modal').classList.remove('visible');
+            await exportAllSizes(btn.dataset.preset);
+        });
+    });
 
     // Position presets
     document.querySelectorAll('.position-preset').forEach(btn => {
@@ -2725,7 +3529,7 @@ function updateLanguageMenu() {
     state.projectLanguages.forEach(lang => {
         const btn = document.createElement('button');
         btn.className = 'language-menu-item' + (lang === state.currentLanguage ? ' active' : '');
-        btn.innerHTML = `<span class="flag">${languageFlags[lang] || '🏳️'}</span> ${languageNames[lang] || lang.toUpperCase()}`;
+        btn.innerHTML = `<span class="flag">${languageFlags[lang] || '🏳️'}</span> ${escapeHtml(languageNames[lang] || lang.toUpperCase())}`;
         btn.onclick = () => {
             switchGlobalLanguage(lang);
             document.getElementById('language-menu').classList.remove('visible');
@@ -2782,7 +3586,7 @@ function updateLanguagesList() {
 
         item.innerHTML = `
             <span class="flag">${flag}</span>
-            <span class="name">${name}</span>
+            <span class="name">${escapeHtml(name)}</span>
             ${isCurrent ? '<span class="current-badge">Current</span>' : ''}
             <button class="remove-btn" ${isOnly ? 'disabled' : ''} title="${isOnly ? 'Cannot remove the only language' : 'Remove language'}">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -3038,15 +3842,16 @@ function openTranslateModal(target) {
     targetsContainer.innerHTML = '';
 
     languages.forEach(lang => {
+        const safeLangName = escapeHtml(languageNames[lang] || lang);
         const item = document.createElement('div');
         item.className = 'translate-target-item';
         item.dataset.lang = lang;
         item.innerHTML = `
             <div class="translate-target-header">
                 <span class="flag">${languageFlags[lang]}</span>
-                <span>${languageNames[lang] || lang}</span>
+                <span>${safeLangName}</span>
             </div>
-            <textarea placeholder="Enter ${languageNames[lang] || lang} translation...">${texts[lang] || ''}</textarea>
+            <textarea placeholder="Enter ${safeLangName} translation...">${escapeHtml(texts[lang] || '')}</textarea>
         `;
         targetsContainer.appendChild(item);
     });
@@ -3849,7 +4654,7 @@ function loadTextUIFromGlobal() {
 
 // Update all text UI elements
 function updateTextUI(text) {
-    document.getElementById('headline-text').value = text.headline || '';
+    document.getElementById('headline-text').value = text.headlines ? (text.headlines[text.currentHeadlineLang || 'en'] || '') : (text.headline || '');
     document.getElementById('headline-font').value = text.headlineFont;
     updateFontPickerPreview();
     document.getElementById('headline-size').value = text.headlineSize;
@@ -3866,9 +4671,15 @@ function updateTextUI(text) {
     });
     document.getElementById('text-offset-y').value = text.offsetY;
     document.getElementById('text-offset-y-value').textContent = formatValue(text.offsetY) + '%';
+    const ox = text.offsetX !== undefined ? text.offsetX : 50;
+    document.getElementById('text-offset-x').value = ox;
+    document.getElementById('text-offset-x-value').textContent = formatValue(ox) + '%';
+    const tr = text.textRotation || 0;
+    document.getElementById('text-rotation').value = tr;
+    document.getElementById('text-rotation-value').textContent = tr + '°';
     document.getElementById('line-height').value = text.lineHeight;
     document.getElementById('line-height-value').textContent = formatValue(text.lineHeight) + '%';
-    document.getElementById('subheadline-text').value = text.subheadline || '';
+    document.getElementById('subheadline-text').value = text.subheadlines ? (text.subheadlines[text.currentSubheadlineLang || 'en'] || '') : (text.subheadline || '');
     document.getElementById('subheadline-font').value = text.subheadlineFont || text.headlineFont;
     document.getElementById('subheadline-size').value = text.subheadlineSize;
     document.getElementById('subheadline-color').value = text.subheadlineColor;
@@ -4072,13 +4883,16 @@ function createNewScreenshot(img, src, name, lang, deviceType) {
         addProjectLanguage(lang);
     }
 
+    const clonedBackground = JSON.parse(JSON.stringify(makeSerializableBackground(state.defaults.background)));
+    clonedBackground.image = state.defaults.background.image || null;
+
     // Each screenshot gets its own copy of all settings from defaults
     state.screenshots.push({
         image: img, // Keep for legacy compatibility
         name: name,
         deviceType: deviceType,
         localizedImages: localizedImages,
-        background: JSON.parse(JSON.stringify(state.defaults.background)),
+        background: clonedBackground,
         screenshot: JSON.parse(JSON.stringify(state.defaults.screenshot)),
         text: JSON.parse(JSON.stringify(state.defaults.text)),
         // Legacy overrides for backwards compatibility
@@ -4204,10 +5018,10 @@ function updateScreenshotList() {
                     <circle cx="9" cy="18" r="2"/><circle cx="15" cy="18" r="2"/>
                 </svg>
             </div>
-            <img class="screenshot-thumb" src="${thumbSrc}" alt="${screenshot.name}">
+            <img class="screenshot-thumb" src="${thumbSrc}" alt="${escapeHtml(screenshot.name)}">
             <div class="screenshot-info">
-                <div class="screenshot-name">${screenshot.name}</div>
-                <div class="screenshot-device">${isTransferTarget ? 'Click source to copy style' : screenshot.deviceType}${langFlagsHtml}</div>
+                <div class="screenshot-name">${escapeHtml(screenshot.name)}</div>
+                <div class="screenshot-device">${isTransferTarget ? 'Click source to copy style' : escapeHtml(screenshot.deviceType)}${langFlagsHtml}</div>
             </div>
             ${buttonsHtml}
         `;
@@ -4458,9 +5272,8 @@ function transferStyle(sourceIndex, targetIndex) {
     // Deep copy background settings
     target.background = JSON.parse(JSON.stringify(source.background));
     // Handle background image separately (not JSON serializable)
-    if (source.background.image) {
-        target.background.image = source.background.image;
-    }
+    target.background.image = source.background.image || null;
+    target.background.imageSrc = source.background.imageSrc || source.background.image?.src || null;
 
     // Deep copy screenshot settings
     target.screenshot = JSON.parse(JSON.stringify(source.screenshot));
@@ -4507,9 +5320,8 @@ function applyStyleToAll() {
         // Deep copy background settings
         target.background = JSON.parse(JSON.stringify(source.background));
         // Handle background image separately (not JSON serializable)
-        if (source.background.image) {
-            target.background.image = source.background.image;
-        }
+        target.background.image = source.background.image || null;
+        target.background.imageSrc = source.background.imageSrc || source.background.image?.src || null;
 
         // Deep copy screenshot settings
         target.screenshot = JSON.parse(JSON.stringify(source.screenshot));
@@ -4610,6 +5422,13 @@ function updateGradientStopsUI() {
         div.querySelector('input[type="color"]').addEventListener('input', (e) => {
             const currentBg = getBackground();
             currentBg.gradient.stops[index].color = e.target.value;
+            if (batchApply) {
+                state.screenshots.forEach(s => {
+                    if (s.background !== currentBg && s.background.gradient.stops[index]) {
+                        s.background.gradient.stops[index].color = e.target.value;
+                    }
+                });
+            }
             // Deselect preset when manually changing colors
             document.querySelectorAll('.preset-swatch').forEach(s => s.classList.remove('selected'));
             updateCanvas();
@@ -4618,6 +5437,13 @@ function updateGradientStopsUI() {
         div.querySelector('input[type="number"]').addEventListener('input', (e) => {
             const currentBg = getBackground();
             currentBg.gradient.stops[index].position = parseInt(e.target.value);
+            if (batchApply) {
+                state.screenshots.forEach(s => {
+                    if (s.background !== currentBg && s.background.gradient.stops[index]) {
+                        s.background.gradient.stops[index].position = parseInt(e.target.value);
+                    }
+                });
+            }
             // Deselect preset when manually changing positions
             document.querySelectorAll('.preset-swatch').forEach(s => s.classList.remove('selected'));
             updateCanvas();
@@ -4628,6 +5454,13 @@ function updateGradientStopsUI() {
             deleteBtn.addEventListener('click', () => {
                 const currentBg = getBackground();
                 currentBg.gradient.stops.splice(index, 1);
+                if (batchApply) {
+                    state.screenshots.forEach(s => {
+                        if (s.background !== currentBg && s.background.gradient.stops.length > index) {
+                            s.background.gradient.stops.splice(index, 1);
+                        }
+                    });
+                }
                 // Deselect preset when deleting a stop
                 document.querySelectorAll('.preset-swatch').forEach(s => s.classList.remove('selected'));
                 updateGradientStopsUI();
@@ -4648,6 +5481,7 @@ function getCanvasDimensions() {
 
 function updateCanvas() {
     saveState(); // Persist state on every update
+    scheduleHistoryCommit();
     const dims = getCanvasDimensions();
     canvas.width = dims.width;
     canvas.height = dims.height;
@@ -5110,9 +5944,20 @@ function drawTextToContext(context, dims, txt) {
     if (!headline && !subheadline) return;
 
     const padding = dims.width * 0.08;
+    const offsetX = txt.offsetX !== undefined ? txt.offsetX : 50;
+    const textX = dims.width * (offsetX / 100);
     const textY = txt.position === 'top'
         ? dims.height * (txt.offsetY / 100)
         : dims.height * (1 - txt.offsetY / 100);
+
+    const rotation = txt.textRotation || 0;
+
+    context.save();
+    if (rotation !== 0) {
+        context.translate(textX, textY);
+        context.rotate(rotation * Math.PI / 180);
+        context.translate(-textX, -textY);
+    }
 
     context.textAlign = 'center';
     context.textBaseline = txt.position === 'top' ? 'top' : 'bottom';
@@ -5123,54 +5968,21 @@ function drawTextToContext(context, dims, txt) {
     if (headline) {
         const fontStyle = txt.headlineItalic ? 'italic' : 'normal';
         context.font = `${fontStyle} ${txt.headlineWeight} ${txt.headlineSize}px ${txt.headlineFont}`;
-        context.fillStyle = txt.headlineColor;
 
         const lines = wrapText(context, headline, dims.width - padding * 2);
         const lineHeight = txt.headlineSize * (txt.lineHeight / 100);
 
-        // For bottom positioning, offset currentY so lines draw correctly
         if (txt.position === 'bottom') {
             currentY -= (lines.length - 1) * lineHeight;
         }
 
-        let lastLineY;
-        lines.forEach((line, i) => {
-            const y = currentY + i * lineHeight;
-            lastLineY = y;
-            context.fillText(line, dims.width / 2, y);
+        drawTextLines(context, lines, textX, currentY, lineHeight, txt.headlineSize, txt.headlineColor, context.font, txt, true);
 
-            // Calculate text metrics for decorations
-            const textWidth = context.measureText(line).width;
-            const fontSize = txt.headlineSize;
-            const lineThickness = Math.max(2, fontSize * 0.05);
-            const x = dims.width / 2 - textWidth / 2;
-
-            // Draw underline
-            if (txt.headlineUnderline) {
-                const underlineY = txt.position === 'top'
-                    ? y + fontSize * 0.9
-                    : y + fontSize * 0.1;
-                context.fillRect(x, underlineY, textWidth, lineThickness);
-            }
-
-            // Draw strikethrough
-            if (txt.headlineStrikethrough) {
-                const strikeY = txt.position === 'top'
-                    ? y + fontSize * 0.4
-                    : y - fontSize * 0.4;
-                context.fillRect(x, strikeY, textWidth, lineThickness);
-            }
-        });
-
-        // Track where subheadline should start (below the bottom edge of headline)
-        // The gap between headline and subheadline should be (lineHeight - fontSize)
-        // This is the "extra" spacing beyond the text itself
+        const lastLineY = currentY + (lines.length - 1) * lineHeight;
         const gap = lineHeight - txt.headlineSize;
         if (txt.position === 'top') {
-            // For top: lastLineY is top of last line, add fontSize to get bottom, then add gap
             currentY = lastLineY + txt.headlineSize + gap;
         } else {
-            // For bottom: lastLineY is already the bottom of last line, just add gap
             currentY = lastLineY + gap;
         }
     }
@@ -5180,46 +5992,24 @@ function drawTextToContext(context, dims, txt) {
         const subFontStyle = txt.subheadlineItalic ? 'italic' : 'normal';
         const subWeight = txt.subheadlineWeight || '400';
         context.font = `${subFontStyle} ${subWeight} ${txt.subheadlineSize}px ${txt.subheadlineFont || txt.headlineFont}`;
-        context.fillStyle = hexToRgba(txt.subheadlineColor, txt.subheadlineOpacity / 100);
+        const subFillStyle = hexToRgba(txt.subheadlineColor, txt.subheadlineOpacity / 100);
 
         const lines = wrapText(context, subheadline, dims.width - padding * 2);
         const subLineHeight = txt.subheadlineSize * 1.4;
 
-        // Subheadline starts after headline with gap determined by headline lineHeight
-        // For bottom position, switch to 'top' baseline so subheadline draws downward
         const subY = currentY;
         if (txt.position === 'bottom') {
             context.textBaseline = 'top';
         }
 
-        lines.forEach((line, i) => {
-            const y = subY + i * subLineHeight;
-            context.fillText(line, dims.width / 2, y);
+        drawTextLines(context, lines, textX, subY, subLineHeight, txt.subheadlineSize, subFillStyle, context.font, txt, false);
 
-            // Calculate text metrics for decorations
-            const textWidth = context.measureText(line).width;
-            const fontSize = txt.subheadlineSize;
-            const lineThickness = Math.max(2, fontSize * 0.05);
-            const x = dims.width / 2 - textWidth / 2;
-
-            // Draw underline (using 'top' baseline for subheadline)
-            if (txt.subheadlineUnderline) {
-                const underlineY = y + fontSize * 0.9;
-                context.fillRect(x, underlineY, textWidth, lineThickness);
-            }
-
-            // Draw strikethrough
-            if (txt.subheadlineStrikethrough) {
-                const strikeY = y + fontSize * 0.4;
-                context.fillRect(x, strikeY, textWidth, lineThickness);
-            }
-        });
-
-        // Restore baseline if we changed it
         if (txt.position === 'bottom') {
             context.textBaseline = 'bottom';
         }
     }
+
+    context.restore();
 }
 
 function drawBackground() {
@@ -5290,6 +6080,100 @@ function drawBackground() {
             ctx.globalAlpha = 1;
         }
     }
+}
+
+function canvasMouseToInternal(e) {
+    const rect = canvas.getBoundingClientRect();
+    const dims = getCanvasDimensions();
+    const scaleX = dims.width / rect.width;
+    const scaleY = dims.height / rect.height;
+    return {
+        x: (e.clientX - rect.left) * scaleX,
+        y: (e.clientY - rect.top) * scaleY
+    };
+}
+
+function getScreenshotBounds() {
+    const dims = getCanvasDimensions();
+    const screenshot = state.screenshots[state.selectedIndex];
+    if (!screenshot) return null;
+    const img = getScreenshotImage(screenshot);
+    if (!img) return null;
+    const settings = getScreenshotSettings();
+    const scale = settings.scale / 100;
+    let imgWidth = dims.width * scale;
+    let imgHeight = (img.height / img.width) * imgWidth;
+    if (imgHeight > dims.height * scale) {
+        imgHeight = dims.height * scale;
+        imgWidth = (img.width / img.height) * imgHeight;
+    }
+    const x = (dims.width - imgWidth) * (settings.x / 100);
+    const y = (dims.height - imgHeight) * (settings.y / 100);
+    return { x, y, width: imgWidth, height: imgHeight };
+}
+
+function hitTestScreenshot(canvasX, canvasY) {
+    const bounds = getScreenshotBounds();
+    if (!bounds) return false;
+    const settings = getScreenshotSettings();
+    const cx = bounds.x + bounds.width / 2;
+    const cy = bounds.y + bounds.height / 2;
+    const angle = -(settings.rotation || 0) * Math.PI / 180;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const dx = canvasX - cx;
+    const dy = canvasY - cy;
+    const localX = dx * cos - dy * sin + cx;
+    const localY = dx * sin + dy * cos + cy;
+    return localX >= bounds.x && localX <= bounds.x + bounds.width
+        && localY >= bounds.y && localY <= bounds.y + bounds.height;
+}
+
+function getTextBounds() {
+    const dims = getCanvasDimensions();
+    const txt = getTextSettings();
+    const headlineEnabled = txt.headlineEnabled !== false;
+    const subheadlineEnabled = txt.subheadlineEnabled || false;
+    const headline = headlineEnabled && txt.headlines ? (txt.headlines[txt.currentHeadlineLang || 'en'] || '') : '';
+    const subheadline = subheadlineEnabled && txt.subheadlines ? (txt.subheadlines[txt.currentSubheadlineLang || 'en'] || '') : '';
+    if (!headline && !subheadline) return null;
+
+    const padding = dims.width * 0.08;
+    const offsetX = txt.offsetX !== undefined ? txt.offsetX : 50;
+    const textX = dims.width * (offsetX / 100);
+    const textY = txt.position === 'top'
+        ? dims.height * (txt.offsetY / 100)
+        : dims.height * (1 - txt.offsetY / 100);
+
+    // Estimate text block height
+    let totalHeight = 0;
+    let maxWidth = 0;
+    if (headline) {
+        const lineHeight = txt.headlineSize * (txt.lineHeight / 100);
+        // Rough estimate: assume 2 lines max for hit testing
+        const estimatedLines = Math.max(1, Math.ceil(headline.length * txt.headlineSize * 0.5 / (dims.width - padding * 2)));
+        totalHeight += estimatedLines * lineHeight;
+        maxWidth = Math.min(dims.width - padding * 2, headline.length * txt.headlineSize * 0.5);
+    }
+    if (subheadline) {
+        const subLineHeight = txt.subheadlineSize * 1.4;
+        totalHeight += subLineHeight;
+        const subWidth = Math.min(dims.width - padding * 2, subheadline.length * txt.subheadlineSize * 0.5);
+        maxWidth = Math.max(maxWidth, subWidth);
+    }
+
+    maxWidth = Math.max(maxWidth, dims.width * 0.3); // Min width for easier grabbing
+    const halfW = maxWidth / 2;
+    const top = txt.position === 'top' ? textY : textY - totalHeight;
+
+    return { x: textX - halfW, y: top, width: maxWidth, height: totalHeight };
+}
+
+function hitTestText(canvasX, canvasY) {
+    const bounds = getTextBounds();
+    if (!bounds) return false;
+    return canvasX >= bounds.x && canvasX <= bounds.x + bounds.width
+        && canvasY >= bounds.y && canvasY <= bounds.y + bounds.height;
 }
 
 function drawScreenshot() {
@@ -5403,6 +6287,82 @@ function drawDeviceFrame(x, y, width, height) {
     ctx.globalAlpha = 1;
 }
 
+function applyTextEffects(context, txt) {
+    const shadow = txt.textShadow;
+    if (shadow && shadow.enabled) {
+        const r = parseInt(shadow.color.slice(1, 3), 16);
+        const g = parseInt(shadow.color.slice(3, 5), 16);
+        const b = parseInt(shadow.color.slice(5, 7), 16);
+        context.shadowColor = `rgba(${r},${g},${b},${shadow.opacity / 100})`;
+        context.shadowBlur = shadow.blur;
+        context.shadowOffsetX = shadow.x;
+        context.shadowOffsetY = shadow.y;
+    }
+}
+
+function clearTextEffects(context) {
+    context.shadowColor = 'transparent';
+    context.shadowBlur = 0;
+    context.shadowOffsetX = 0;
+    context.shadowOffsetY = 0;
+}
+
+function drawTextLines(context, lines, textX, startY, lineHeight, fontSize, fillStyle, font, txt, isHeadline) {
+    const outline = txt.textOutline;
+    const hasOutline = outline && outline.enabled;
+
+    // Draw outline pass first (behind fill)
+    if (hasOutline) {
+        context.save();
+        applyTextEffects(context, txt);
+        context.strokeStyle = outline.color;
+        context.lineWidth = outline.width * 2;
+        context.lineJoin = 'round';
+        lines.forEach((line, i) => {
+            const y = startY + i * lineHeight;
+            context.strokeText(line, textX, y);
+        });
+        clearTextEffects(context);
+        context.restore();
+    }
+
+    // Draw fill pass with shadow
+    context.save();
+    applyTextEffects(context, txt);
+    context.fillStyle = fillStyle;
+    lines.forEach((line, i) => {
+        const y = startY + i * lineHeight;
+        context.fillText(line, textX, y);
+    });
+    clearTextEffects(context);
+    context.restore();
+
+    // Draw decorations (underline, strikethrough)
+    const prefix = isHeadline ? 'headline' : 'subheadline';
+    lines.forEach((line, i) => {
+        const y = startY + i * lineHeight;
+        const textWidth = context.measureText(line).width;
+        const lineThickness = Math.max(2, fontSize * 0.05);
+        const x = textX - textWidth / 2;
+
+        if (txt[prefix + 'Underline']) {
+            const underlineY = txt.position === 'top' || !isHeadline
+                ? y + fontSize * 0.9
+                : y + fontSize * 0.1;
+            context.fillStyle = fillStyle;
+            context.fillRect(x, underlineY, textWidth, lineThickness);
+        }
+
+        if (txt[prefix + 'Strikethrough']) {
+            const strikeY = txt.position === 'top' || !isHeadline
+                ? y + fontSize * 0.4
+                : y - fontSize * 0.4;
+            context.fillStyle = fillStyle;
+            context.fillRect(x, strikeY, textWidth, lineThickness);
+        }
+    });
+}
+
 function drawText() {
     const dims = getCanvasDimensions();
     const text = getTextSettings();
@@ -5418,9 +6378,20 @@ function drawText() {
     if (!headline && !subheadline) return;
 
     const padding = dims.width * 0.08;
+    const offsetX = text.offsetX !== undefined ? text.offsetX : 50;
+    const textX = dims.width * (offsetX / 100);
     const textY = text.position === 'top'
         ? dims.height * (text.offsetY / 100)
         : dims.height * (1 - text.offsetY / 100);
+
+    const rotation = text.textRotation || 0;
+
+    ctx.save();
+    if (rotation !== 0) {
+        ctx.translate(textX, textY);
+        ctx.rotate(rotation * Math.PI / 180);
+        ctx.translate(-textX, -textY);
+    }
 
     ctx.textAlign = 'center';
     ctx.textBaseline = text.position === 'top' ? 'top' : 'bottom';
@@ -5431,7 +6402,6 @@ function drawText() {
     if (headline) {
         const fontStyle = text.headlineItalic ? 'italic' : 'normal';
         ctx.font = `${fontStyle} ${text.headlineWeight} ${text.headlineSize}px ${text.headlineFont}`;
-        ctx.fillStyle = text.headlineColor;
 
         const lines = wrapText(ctx, headline, dims.width - padding * 2);
         const lineHeight = text.headlineSize * (text.lineHeight / 100);
@@ -5440,45 +6410,13 @@ function drawText() {
             currentY -= (lines.length - 1) * lineHeight;
         }
 
-        let lastLineY;
-        lines.forEach((line, i) => {
-            const y = currentY + i * lineHeight;
-            lastLineY = y;
-            ctx.fillText(line, dims.width / 2, y);
+        drawTextLines(ctx, lines, textX, currentY, lineHeight, text.headlineSize, text.headlineColor, ctx.font, text, true);
 
-            // Calculate text metrics for decorations
-            // When textBaseline is 'top', y is at top of text; when 'bottom', y is at bottom
-            const textWidth = ctx.measureText(line).width;
-            const fontSize = text.headlineSize;
-            const lineThickness = Math.max(2, fontSize * 0.05);
-            const x = dims.width / 2 - textWidth / 2;
-
-            // Draw underline
-            if (text.headlineUnderline) {
-                const underlineY = text.position === 'top'
-                    ? y + fontSize * 0.9  // Below text when baseline is top
-                    : y + fontSize * 0.1; // Below text when baseline is bottom
-                ctx.fillRect(x, underlineY, textWidth, lineThickness);
-            }
-
-            // Draw strikethrough
-            if (text.headlineStrikethrough) {
-                const strikeY = text.position === 'top'
-                    ? y + fontSize * 0.4  // Middle of text when baseline is top
-                    : y - fontSize * 0.4; // Middle of text when baseline is bottom
-                ctx.fillRect(x, strikeY, textWidth, lineThickness);
-            }
-        });
-
-        // Track where subheadline should start (below the bottom edge of headline)
-        // The gap between headline and subheadline should be (lineHeight - fontSize)
-        // This is the "extra" spacing beyond the text itself
+        const lastLineY = currentY + (lines.length - 1) * lineHeight;
         const gap = lineHeight - text.headlineSize;
         if (text.position === 'top') {
-            // For top: lastLineY is top of last line, add fontSize to get bottom, then add gap
             currentY = lastLineY + text.headlineSize + gap;
         } else {
-            // For bottom: lastLineY is already the bottom of last line, just add gap
             currentY = lastLineY + gap;
         }
     }
@@ -5488,46 +6426,24 @@ function drawText() {
         const subFontStyle = text.subheadlineItalic ? 'italic' : 'normal';
         const subWeight = text.subheadlineWeight || '400';
         ctx.font = `${subFontStyle} ${subWeight} ${text.subheadlineSize}px ${text.subheadlineFont || text.headlineFont}`;
-        ctx.fillStyle = hexToRgba(text.subheadlineColor, text.subheadlineOpacity / 100);
+        const subFillStyle = hexToRgba(text.subheadlineColor, text.subheadlineOpacity / 100);
 
         const lines = wrapText(ctx, subheadline, dims.width - padding * 2);
         const subLineHeight = text.subheadlineSize * 1.4;
 
-        // Subheadline starts after headline with gap determined by headline lineHeight
-        // For bottom position, switch to 'top' baseline so subheadline draws downward
         const subY = currentY;
         if (text.position === 'bottom') {
             ctx.textBaseline = 'top';
         }
 
-        lines.forEach((line, i) => {
-            const y = subY + i * subLineHeight;
-            ctx.fillText(line, dims.width / 2, y);
+        drawTextLines(ctx, lines, textX, subY, subLineHeight, text.subheadlineSize, subFillStyle, ctx.font, text, false);
 
-            // Calculate text metrics for decorations
-            const textWidth = ctx.measureText(line).width;
-            const fontSize = text.subheadlineSize;
-            const lineThickness = Math.max(2, fontSize * 0.05);
-            const x = dims.width / 2 - textWidth / 2;
-
-            // Draw underline (using 'top' baseline for subheadline)
-            if (text.subheadlineUnderline) {
-                const underlineY = y + fontSize * 0.9;
-                ctx.fillRect(x, underlineY, textWidth, lineThickness);
-            }
-
-            // Draw strikethrough
-            if (text.subheadlineStrikethrough) {
-                const strikeY = y + fontSize * 0.4;
-                ctx.fillRect(x, strikeY, textWidth, lineThickness);
-            }
-        });
-
-        // Restore baseline if we changed it
         if (text.position === 'bottom') {
             ctx.textBaseline = 'bottom';
         }
     }
+
+    ctx.restore();
 }
 
 function drawNoise() {
@@ -5605,6 +6521,7 @@ async function exportCurrent() {
         await showAppAlert('Please upload a screenshot first', 'info');
         return;
     }
+    flushStateSave();
 
     // Ensure canvas is up-to-date (especially important for 3D mode)
     updateCanvas();
@@ -5620,6 +6537,7 @@ async function exportAll() {
         await showAppAlert('Please upload screenshots first', 'info');
         return;
     }
+    flushStateSave();
 
     // Check if project has multiple languages configured
     const hasMultipleLanguages = state.projectLanguages.length > 1;
@@ -5795,6 +6713,618 @@ async function exportAllLanguages() {
     link.href = URL.createObjectURL(content);
     link.click();
     URL.revokeObjectURL(link.href);
+}
+
+// Store export presets — groups of device sizes for one-click export
+const storeExportPresets = {
+    'apple': {
+        name: 'Apple App Store',
+        devices: ['iphone-6.9', 'iphone-6.7', 'iphone-6.5']
+    },
+    'apple-full': {
+        name: 'Apple Full',
+        devices: ['iphone-6.9', 'iphone-6.7', 'iphone-6.5', 'iphone-5.5', 'ipad-12.9', 'ipad-11']
+    },
+    'google': {
+        name: 'Google Play Store',
+        devices: ['android-phone', 'android-phone-hd']
+    },
+    'all-stores': {
+        name: 'All Stores',
+        devices: ['iphone-6.9', 'iphone-6.7', 'iphone-6.5', 'iphone-5.5', 'ipad-12.9', 'ipad-11', 'android-phone', 'android-phone-hd', 'android-tablet-7', 'android-tablet-10']
+    }
+};
+
+// Device display names for folder naming
+const deviceDisplayNames = {
+    'iphone-6.9': 'iPhone_6.9',
+    'iphone-6.7': 'iPhone_6.7',
+    'iphone-6.5': 'iPhone_6.5',
+    'iphone-5.5': 'iPhone_5.5',
+    'ipad-12.9': 'iPad_12.9',
+    'ipad-11': 'iPad_11',
+    'android-phone': 'Android_Phone',
+    'android-phone-hd': 'Android_Phone_HD',
+    'android-tablet-7': 'Android_Tablet_7',
+    'android-tablet-10': 'Android_Tablet_10'
+};
+
+async function exportAllSizes(presetKey) {
+    if (state.screenshots.length === 0) {
+        await showAppAlert('Please upload screenshots first', 'info');
+        return;
+    }
+
+    const preset = storeExportPresets[presetKey];
+    if (!preset) return;
+
+    flushStateSave();
+
+    const originalDevice = state.outputDevice;
+    const originalIndex = state.selectedIndex;
+    const zip = new JSZip();
+
+    const totalDevices = preset.devices.length;
+    const totalScreenshots = state.screenshots.length;
+    const totalItems = totalDevices * totalScreenshots;
+    let completedItems = 0;
+
+    showExportProgress('Exporting...', `Preparing ${preset.name} export`, 0);
+
+    // Create an offscreen canvas for rendering at different sizes
+    const exportCanvas = document.createElement('canvas');
+    const exportCtx = exportCanvas.getContext('2d');
+
+    for (let d = 0; d < totalDevices; d++) {
+        const device = preset.devices[d];
+        const dims = deviceDimensions[device];
+        if (!dims) continue;
+
+        const folderName = deviceDisplayNames[device] || device;
+
+        // Set canvas to this device size
+        exportCanvas.width = dims.width;
+        exportCanvas.height = dims.height;
+
+        for (let i = 0; i < totalScreenshots; i++) {
+            state.selectedIndex = i;
+
+            // Render to the offscreen canvas at the target dimensions
+            renderToContext(exportCtx, dims, state.screenshots[i]);
+
+            completedItems++;
+            const percent = Math.round((completedItems / totalItems) * 90);
+            showExportProgress('Exporting...', `${folderName} — screenshot ${i + 1} of ${totalScreenshots}`, percent);
+
+            await new Promise(resolve => setTimeout(resolve, 50));
+
+            const dataUrl = exportCanvas.toDataURL('image/png');
+            const base64Data = dataUrl.replace(/^data:image\/png;base64,/, '');
+            zip.file(`${folderName}/screenshot-${i + 1}.png`, base64Data, { base64: true });
+        }
+    }
+
+    // Restore original state
+    state.outputDevice = originalDevice;
+    state.selectedIndex = originalIndex;
+    updateCanvas();
+
+    // Generate ZIP
+    showExportProgress('Generating ZIP...', '', 95);
+    const content = await zip.generateAsync({ type: 'blob' });
+
+    showExportProgress('Complete!', '', 100);
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    hideExportProgress();
+
+    const link = document.createElement('a');
+    link.download = `screenshots_${preset.name.replace(/\s+/g, '_')}.zip`;
+    link.href = URL.createObjectURL(content);
+    link.click();
+    URL.revokeObjectURL(link.href);
+}
+
+// Render a single screenshot to an arbitrary context/dimensions
+function renderToContext(targetCtx, dims, screenshot) {
+    const bg = screenshot.background;
+    const ss = screenshot.screenshot;
+    const txt = screenshot.text;
+
+    // Clear
+    targetCtx.clearRect(0, 0, dims.width, dims.height);
+
+    // Draw background
+    drawBackgroundToContext(targetCtx, dims, bg);
+
+    // Draw screenshot image (2D only for multi-size export)
+    const img = typeof getScreenshotImage === 'function' ? getScreenshotImage(screenshot) : screenshot.image;
+    if (img) {
+        drawScreenshotToContext(targetCtx, dims, img, ss);
+    }
+
+    // Draw text
+    drawTextToContext(targetCtx, dims, txt);
+
+    // Draw noise
+    if (bg.noise) {
+        drawNoiseToContext(targetCtx, dims, bg.noiseIntensity || 10);
+    }
+}
+
+async function waitForRenderStability(timeoutMs = 15000) {
+    const start = Date.now();
+    const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
+
+    await nextFrame();
+    await nextFrame();
+
+    // Wait for 3D model readiness if needed
+    while (state.screenshots.some(s => s?.screenshot?.use3D) && typeof phoneModelLoaded !== 'undefined' && !phoneModelLoaded) {
+        if (Date.now() - start > timeoutMs) {
+            throw new Error('Timed out waiting for 3D model to load');
+        }
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+
+    await nextFrame();
+    await nextFrame();
+}
+
+function loadImageFromDataUrl(dataUrl) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error('Failed to load image data URL'));
+        img.src = dataUrl;
+    });
+}
+
+function applyDeepMerge(target, source) {
+    if (!source || typeof source !== 'object') return target;
+    Object.keys(source).forEach((key) => {
+        const nextValue = source[key];
+        if (nextValue && typeof nextValue === 'object' && !Array.isArray(nextValue) && typeof target[key] === 'object' && target[key] !== null) {
+            applyDeepMerge(target[key], nextValue);
+        } else {
+            target[key] = nextValue;
+        }
+    });
+    return target;
+}
+
+function createAutomationRenderSnapshot() {
+    return {
+        selectedIndex: state.selectedIndex,
+        currentLanguage: state.currentLanguage,
+        outputDevice: state.outputDevice,
+        textLangs: state.screenshots.map((s) => ({
+            headline: s.text.currentHeadlineLang,
+            subheadline: s.text.currentSubheadlineLang
+        }))
+    };
+}
+
+function applyAutomationRenderContext(language, outputDevice) {
+    state.currentLanguage = language;
+    state.outputDevice = outputDevice;
+    state.screenshots.forEach((s) => {
+        s.text.currentHeadlineLang = language;
+        s.text.currentSubheadlineLang = language;
+    });
+}
+
+function restoreAutomationRenderSnapshot(snapshot) {
+    state.selectedIndex = snapshot.selectedIndex;
+    state.currentLanguage = snapshot.currentLanguage;
+    state.outputDevice = snapshot.outputDevice;
+    state.screenshots.forEach((s, index) => {
+        const original = snapshot.textLangs[index];
+        if (!original) return;
+        s.text.currentHeadlineLang = original.headline;
+        s.text.currentSubheadlineLang = original.subheadline;
+    });
+}
+
+window.__appscreenAutomation = {
+    async getVersion() {
+        return 'automation-v1';
+    },
+
+    async healthCheck() {
+        return {
+            ready: true,
+            screenshots: state.screenshots.length,
+            currentProjectId,
+            outputDevice: state.outputDevice,
+            projectCount: projects.length,
+            projectNames: projects.map(p => p.name)
+        };
+    },
+
+    async getScreenshotCount() {
+        return state.screenshots.length;
+    },
+
+    async resetProject(options = {}) {
+        const projectName = (options.name || '').trim() || createDefaultProjectName();
+        await createProject(projectName);
+        resetStateToDefaults();
+        updateScreenshotList();
+        syncUIWithState();
+        updateGradientStopsUI();
+        updateCanvas();
+        flushStateSave();
+        return {
+            projectId: currentProjectId,
+            projectName
+        };
+    },
+
+    async importLocalizedScreenshots(files = []) {
+        if (!Array.isArray(files)) {
+            throw new Error('files must be an array of { name, dataUrl }');
+        }
+        const normalized = files.map((file, index) => {
+            if (!file || typeof file !== 'object') {
+                throw new Error(`File at index ${index} is invalid`);
+            }
+            if (!file.name || typeof file.name !== 'string') {
+                throw new Error(`File at index ${index} must include a name`);
+            }
+            if (!file.dataUrl || typeof file.dataUrl !== 'string' || !file.dataUrl.startsWith('data:image/')) {
+                throw new Error(`File ${file.name} must include an image dataUrl`);
+            }
+            return { name: file.name, dataUrl: file.dataUrl };
+        });
+
+        await processElectronFilesSequentially(normalized);
+        await waitForRenderStability();
+        flushStateSave();
+        return { imported: normalized.length, screenshots: state.screenshots.length };
+    },
+
+    async applyListingSpec(spec = {}) {
+        if (!spec || typeof spec !== 'object') {
+            throw new Error('spec must be an object');
+        }
+        if (!Array.isArray(spec.languages) || spec.languages.length === 0) {
+            throw new Error('spec.languages must be a non-empty array');
+        }
+        if (!Array.isArray(spec.screens) || spec.screens.length === 0) {
+            throw new Error('spec.screens must be a non-empty array');
+        }
+
+        const projectName = (spec.projectName || '').trim() || createDefaultProjectName();
+        await createProject(projectName);
+
+        // Reset the active project contents
+        resetStateToDefaults();
+        state.projectLanguages = Array.from(new Set(spec.languages));
+        state.currentLanguage = state.projectLanguages[0];
+        state.defaults.text.headlineLanguages = [...state.projectLanguages];
+        state.defaults.text.subheadlineLanguages = [...state.projectLanguages];
+        state.defaults.text.headlines = state.projectLanguages.reduce((acc, lang) => {
+            acc[lang] = '';
+            return acc;
+        }, {});
+        state.defaults.text.subheadlines = state.projectLanguages.reduce((acc, lang) => {
+            acc[lang] = '';
+            return acc;
+        }, {});
+        state.defaults.text.currentHeadlineLang = state.currentLanguage;
+        state.defaults.text.currentSubheadlineLang = state.currentLanguage;
+
+        if (spec.defaults?.background) {
+            applyDeepMerge(state.defaults.background, spec.defaults.background);
+            ensureBackgroundImageLoaded(state.defaults.background, () => updateCanvas());
+        }
+        if (spec.defaults?.screenshot) {
+            applyDeepMerge(state.defaults.screenshot, spec.defaults.screenshot);
+        }
+        if (spec.defaults?.text) {
+            applyDeepMerge(state.defaults.text, spec.defaults.text);
+        }
+        if (spec.customSize && Number.isFinite(spec.customSize.width) && Number.isFinite(spec.customSize.height)) {
+            state.customWidth = Math.max(100, Math.round(spec.customSize.width));
+            state.customHeight = Math.max(100, Math.round(spec.customSize.height));
+        }
+
+        for (let i = 0; i < spec.screens.length; i++) {
+            const screen = spec.screens[i];
+            const images = screen?.images || {};
+            const firstLanguage = state.projectLanguages[0];
+            const primarySrc = images[firstLanguage] || images.default || Object.values(images)[0];
+            if (!primarySrc || typeof primarySrc !== 'string') {
+                throw new Error(`Screen ${screen?.id || i + 1} is missing a primary image`);
+            }
+
+            const primaryImage = await loadImageFromDataUrl(primarySrc);
+            const baseName = (screen?.id ? String(screen.id) : `screenshot-${i + 1}`).replace(/[^\w.-]/g, '_');
+            createNewScreenshot(primaryImage, primarySrc, `${baseName}_${firstLanguage}.png`, firstLanguage, 'iPhone');
+            const screenshotIndex = state.screenshots.length - 1;
+            const screenshot = state.screenshots[screenshotIndex];
+            ensureBackgroundImageLoaded(screenshot.background, () => updateCanvas());
+
+            for (const lang of state.projectLanguages) {
+                const src = images[lang] || images.default;
+                if (!src || lang === firstLanguage) continue;
+                const localizedImg = await loadImageFromDataUrl(src);
+                addLocalizedImage(screenshotIndex, lang, localizedImg, src, `${baseName}_${lang}.png`);
+            }
+
+            if (screen?.text?.headline && typeof screen.text.headline === 'object') {
+                Object.entries(screen.text.headline).forEach(([lang, value]) => {
+                    if (state.projectLanguages.includes(lang)) {
+                        screenshot.text.headlines[lang] = String(value ?? '');
+                    }
+                });
+                screenshot.text.headlineEnabled = true;
+            }
+            if (screen?.text?.subheadline && typeof screen.text.subheadline === 'object') {
+                Object.entries(screen.text.subheadline).forEach(([lang, value]) => {
+                    if (state.projectLanguages.includes(lang)) {
+                        screenshot.text.subheadlines[lang] = String(value ?? '');
+                    }
+                });
+                screenshot.text.subheadlineEnabled = true;
+            }
+
+            if (screen?.style?.background) {
+                applyDeepMerge(screenshot.background, screen.style.background);
+                ensureBackgroundImageLoaded(screenshot.background, () => updateCanvas());
+            }
+            if (screen?.style?.screenshot) {
+                applyDeepMerge(screenshot.screenshot, screen.style.screenshot);
+            }
+            if (screen?.style?.text) {
+                applyDeepMerge(screenshot.text, screen.style.text);
+            }
+        }
+
+        state.selectedIndex = 0;
+        state.outputDevice = spec.outputDevice || state.outputDevice;
+
+        updateLanguageMenu();
+        updateLanguageButton();
+        updateScreenshotList();
+        syncUIWithState();
+        updateGradientStopsUI();
+        updateCanvas();
+        await waitForRenderStability();
+        flushStateSave();
+
+        return {
+            projectId: currentProjectId,
+            projectName,
+            screenshots: state.screenshots.length,
+            languages: state.projectLanguages
+        };
+    },
+
+    async renderAllPng(options = {}) {
+        const language = options.language || state.currentLanguage;
+        const outputDevice = options.outputDevice || state.outputDevice;
+        if (!state.screenshots.length) {
+            return [];
+        }
+        if (!deviceDimensions[outputDevice] && outputDevice !== 'custom') {
+            throw new Error(`Unsupported outputDevice: ${outputDevice}`);
+        }
+        if (!state.projectLanguages.includes(language)) {
+            throw new Error(`Language ${language} is not part of the current project`);
+        }
+
+        const snapshot = createAutomationRenderSnapshot();
+        applyAutomationRenderContext(language, outputDevice);
+
+        const rendered = [];
+        for (let i = 0; i < state.screenshots.length; i++) {
+            state.selectedIndex = i;
+            updateCanvas();
+            await waitForRenderStability();
+            rendered.push({
+                filename: `screenshot-${i + 1}.png`,
+                dataUrl: canvas.toDataURL('image/png'),
+                width: canvas.width,
+                height: canvas.height
+            });
+        }
+
+        restoreAutomationRenderSnapshot(snapshot);
+        updateCanvas();
+        await waitForRenderStability();
+
+        return rendered;
+    },
+
+    async renderPngAt(options = {}) {
+        const language = options.language || state.currentLanguage;
+        const outputDevice = options.outputDevice || state.outputDevice;
+        const index = Number.isInteger(options.index)
+            ? options.index
+            : Number.parseInt(options.index, 10);
+
+        if (!state.screenshots.length) {
+            throw new Error('No screenshots to render');
+        }
+        if (!Number.isInteger(index) || index < 0 || index >= state.screenshots.length) {
+            throw new Error(`Invalid screenshot index: ${options.index}`);
+        }
+        if (!deviceDimensions[outputDevice] && outputDevice !== 'custom') {
+            throw new Error(`Unsupported outputDevice: ${outputDevice}`);
+        }
+        if (!state.projectLanguages.includes(language)) {
+            throw new Error(`Language ${language} is not part of the current project`);
+        }
+
+        const snapshot = createAutomationRenderSnapshot();
+        applyAutomationRenderContext(language, outputDevice);
+        state.selectedIndex = index;
+        updateCanvas();
+        await waitForRenderStability();
+
+        const rendered = {
+            filename: `screenshot-${index + 1}.png`,
+            dataUrl: canvas.toDataURL('image/png'),
+            width: canvas.width,
+            height: canvas.height
+        };
+
+        restoreAutomationRenderSnapshot(snapshot);
+        updateCanvas();
+        await waitForRenderStability();
+
+        return rendered;
+    }
+};
+
+// MCP Server modal
+function initMcpModal() {
+    const modal = document.getElementById('mcp-modal');
+    const isElectron = window.electronAPI?.isElectron;
+    const toggleBtn = document.getElementById('mcp-toggle-btn');
+    const statusDot = document.getElementById('mcp-status-dot');
+    const statusLabel = document.getElementById('mcp-status-label');
+    const statusPid = document.getElementById('mcp-status-pid');
+    const logEl = document.getElementById('mcp-log');
+    const browserNotice = document.getElementById('mcp-browser-notice');
+    const configTextarea = document.getElementById('mcp-config-textarea');
+    const serverPathEl = document.getElementById('mcp-server-path-value');
+
+    function setMcpStatus(running, pid) {
+        statusDot.classList.toggle('running', running);
+        statusLabel.textContent = running ? 'Running' : 'Stopped';
+        statusPid.textContent = running && pid ? `PID ${pid}` : '';
+        toggleBtn.textContent = running ? 'Stop' : 'Start';
+        toggleBtn.classList.toggle('mcp-stop-btn', running);
+    }
+
+    // Generate agent config JSON
+    function getConfigForTab(tab) {
+        const serverPath = serverPathEl.textContent;
+        const escapedPath = serverPath.replace(/\\/g, '/');
+        if (tab === 'claude-desktop') {
+            return JSON.stringify({
+                mcpServers: {
+                    appscreen: {
+                        command: 'node',
+                        args: [escapedPath]
+                    }
+                }
+            }, null, 2);
+        } else if (tab === 'codex') {
+            return `[mcp_servers.appscreen]\ncommand = "node"\nargs = ["${escapedPath}"]`;
+        } else {
+            return JSON.stringify({
+                mcpServers: {
+                    appscreen: {
+                        command: 'node',
+                        args: [escapedPath]
+                    }
+                }
+            }, null, 2);
+        }
+    }
+
+    let activeTab = 'claude-desktop';
+
+    function updateConfig() {
+        configTextarea.value = getConfigForTab(activeTab);
+    }
+
+    // Open modal
+    document.getElementById('mcp-btn').addEventListener('click', async () => {
+        modal.classList.add('visible');
+        if (isElectron) {
+            const status = await window.electronAPI.mcpStatus();
+            setMcpStatus(status.running, status.pid);
+            if (status.serverPath) {
+                serverPathEl.textContent = status.serverPath;
+            }
+        } else {
+            browserNotice.style.display = 'block';
+            toggleBtn.disabled = true;
+            toggleBtn.classList.add('disabled');
+        }
+        updateConfig();
+    });
+
+    // Close modal
+    document.getElementById('mcp-modal-close').addEventListener('click', () => {
+        modal.classList.remove('visible');
+    });
+    document.getElementById('mcp-modal-done').addEventListener('click', () => {
+        modal.classList.remove('visible');
+    });
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) modal.classList.remove('visible');
+    });
+
+    // Start/Stop toggle
+    toggleBtn.addEventListener('click', async () => {
+        if (!isElectron) return;
+        const status = await window.electronAPI.mcpStatus();
+        if (status.running) {
+            const result = await window.electronAPI.mcpStop();
+            if (result.success) setMcpStatus(false);
+        } else {
+            const result = await window.electronAPI.mcpStart();
+            if (result.success) setMcpStatus(true, result.pid);
+            else if (result.error) appendMcpLog('[error] ' + result.error);
+        }
+    });
+
+    // Log
+    function appendMcpLog(text) {
+        logEl.textContent += text;
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    document.getElementById('mcp-clear-log').addEventListener('click', () => {
+        logEl.textContent = '';
+    });
+
+    // Electron log & status listeners
+    if (isElectron) {
+        window.electronAPI.onMcpLog((data) => appendMcpLog(data));
+        window.electronAPI.onMcpStatusChange((status) => setMcpStatus(status.running, status.pid));
+    }
+
+    // Config tabs
+    document.querySelectorAll('.mcp-config-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('.mcp-config-tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            activeTab = tab.dataset.mcpTab;
+            updateConfig();
+        });
+    });
+
+    // Copy config
+    document.getElementById('mcp-copy-config').addEventListener('click', async () => {
+        try {
+            await navigator.clipboard.writeText(configTextarea.value);
+            const btn = document.getElementById('mcp-copy-config');
+            const span = btn.querySelector('span');
+            if (span) {
+                span.textContent = 'Copied!';
+                setTimeout(() => { span.textContent = 'Copy'; }, 1500);
+            }
+        } catch { /* clipboard may not be available */ }
+    });
+
+    // Copy terminal command
+    document.querySelectorAll('.mcp-copy-btn[data-copy-target]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const targetId = btn.dataset.copyTarget;
+            const el = document.getElementById(targetId);
+            if (el) {
+                try {
+                    await navigator.clipboard.writeText(el.textContent);
+                } catch { /* ignore */ }
+            }
+        });
+    });
 }
 
 // Initialize the app

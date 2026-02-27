@@ -106,6 +106,7 @@ html.electron-app #settings-btn {
 
 .sidebar-right .sidebar-header {
     flex-shrink: 0;
+    position: relative;
 }
 
 .sidebar-right .sidebar-header .tabs {
@@ -130,6 +131,41 @@ html.electron-app #settings-btn {
 .sidebar-right .sidebar-header .tab.active {
     background: transparent;
     border-bottom-color: var(--accent);
+}
+
+.toolbar-divider {
+    width: 1px;
+    height: 20px;
+    background: var(--border-color);
+    margin: 0 4px;
+}
+
+.batch-apply-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    height: 32px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s ease;
+}
+
+.batch-apply-toggle:hover {
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+
+.batch-apply-toggle.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
 }
 
 .sidebar-right .sidebar-content {
@@ -759,6 +795,44 @@ input[type="range"]::-webkit-slider-thumb {
     position: relative;
 }
 
+.undo-redo-toolbar {
+    position: absolute;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    z-index: 10;
+}
+
+.undo-redo-btn {
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    padding: 0;
+}
+
+.undo-redo-btn:hover:not(.disabled) {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-color: var(--accent);
+}
+
+.undo-redo-btn.disabled {
+    opacity: 0.5;
+    cursor: default;
+    pointer-events: none;
+}
+
 .preview-strip {
     display: flex;
     align-items: center;
@@ -1063,8 +1137,73 @@ input[type="range"]::-webkit-slider-thumb {
     flex-shrink: 0;
 }
 
+.export-all-row {
+    display: flex;
+    gap: 6px;
+}
+
 .export-all-btn {
-    width: 100%;
+    flex: 1;
+}
+
+.export-sizes-btn {
+    flex: 1;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-color: var(--border-color);
+}
+
+.export-sizes-btn:hover {
+    background: var(--border-color);
+}
+
+.export-sizes-presets {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.export-preset-btn {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    color: var(--text-primary);
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.15s ease;
+}
+
+.export-preset-btn:hover {
+    background: var(--bg-primary);
+    border-color: var(--accent);
+}
+
+.export-preset-icon {
+    font-size: 20px;
+    width: 32px;
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.export-preset-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.export-preset-name {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.export-preset-detail {
+    font-size: 11px;
+    color: var(--text-secondary);
 }
 
 /* Modal styles */
@@ -1327,6 +1466,203 @@ input[type="range"]::-webkit-slider-thumb {
 .settings-modal {
     max-width: 480px;
     text-align: left;
+}
+
+.mcp-modal {
+    max-width: 540px;
+    text-align: left;
+}
+
+.mcp-status-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 0;
+}
+
+.mcp-status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #f44336;
+    flex-shrink: 0;
+}
+
+.mcp-status-dot.running {
+    background: #4caf50;
+}
+
+.mcp-status-label {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.mcp-status-pid {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    flex: 1;
+}
+
+.mcp-toggle-btn {
+    padding: 6px 16px !important;
+    font-size: 13px !important;
+    min-width: 64px;
+}
+
+.mcp-stop-btn {
+    background: #f44336 !important;
+    border-color: #f44336 !important;
+}
+
+.mcp-stop-btn:hover {
+    background: #d32f2f !important;
+}
+
+.mcp-log {
+    background: #0d0d1a;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 10px;
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 11px;
+    color: #8a8;
+    height: 160px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+    margin-bottom: 6px;
+}
+
+.mcp-log:empty::before {
+    content: 'No output yet...';
+    color: var(--text-tertiary);
+    font-style: italic;
+}
+
+.mcp-clear-log-btn {
+    background: none;
+    border: none;
+    color: var(--text-tertiary);
+    font-size: 12px;
+    cursor: pointer;
+    padding: 2px 0;
+}
+
+.mcp-clear-log-btn:hover {
+    color: var(--text-secondary);
+}
+
+.mcp-config-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+.mcp-config-tab {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    padding: 5px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.mcp-config-tab:hover {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
+.mcp-config-tab.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+
+.mcp-config-panel {
+    position: relative;
+}
+
+.mcp-config-textarea {
+    width: 100%;
+    height: 120px;
+    background: #0d0d1a;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 10px;
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 12px;
+    color: var(--text-primary);
+    resize: none;
+}
+
+.mcp-copy-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    padding: 4px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.mcp-copy-btn:hover {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border-color: var(--accent);
+}
+
+.mcp-copy-config-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+}
+
+.mcp-server-path {
+    margin-top: 10px;
+    font-size: 12px;
+    color: var(--text-tertiary);
+}
+
+.mcp-server-path code {
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+}
+
+.mcp-path-label {
+    margin-right: 6px;
+}
+
+.mcp-browser-notice {
+    margin-top: 8px;
+}
+
+.mcp-command-box {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #0d0d1a;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 8px 12px;
+    margin-top: 6px;
+}
+
+.mcp-command-box code {
+    flex: 1;
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 13px;
+    color: var(--text-primary);
 }
 
 .modal-header {
@@ -2296,6 +2632,14 @@ input[type="range"]::-webkit-slider-thumb {
 .project-btn.danger:hover {
     border-color: #ff453a;
     color: #ff453a;
+}
+
+.project-btn-divider {
+    width: 1px;
+    height: 20px;
+    background: var(--border-color);
+    align-self: center;
+    margin: 0 2px;
 }
 
 /* Sidebar header with settings */

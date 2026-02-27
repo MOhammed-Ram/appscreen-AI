@@ -77,6 +77,14 @@
                                 <path d="M12 2l2.4 7.4H22l-6 4.6 2.3 7-6.3-4.6L5.7 21l2.3-7-6-4.6h7.6z"/>
                             </svg>
                         </button>
+                        <button class="settings-btn" id="mcp-btn" title="MCP Server">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <rect x="2" y="2" width="20" height="8" rx="2"/>
+                                <rect x="2" y="14" width="20" height="8" rx="2"/>
+                                <circle cx="6" cy="6" r="1" fill="currentColor"/>
+                                <circle cx="6" cy="18" r="1" fill="currentColor"/>
+                            </svg>
+                        </button>
                         <button class="settings-btn" id="about-btn" title="About">
                             <img src="img/info.svg" width="18" height="18" alt="About">
                         </button>
@@ -120,6 +128,18 @@
                                 <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
                             </svg>
                         </button>
+                        <div class="project-btn-divider"></div>
+                        <button class="project-btn" id="export-project-btn" title="Export Project as JSON">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+                            </svg>
+                        </button>
+                        <button class="project-btn" id="import-project-btn" title="Import Project from JSON">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+                            </svg>
+                        </button>
+                        <input type="file" id="import-project-input" accept=".json" hidden>
                     </div>
                 </div>
 
@@ -224,18 +244,53 @@
                             </svg>
                         </button>
                     </div>
-                    <button class="export-btn export-all-btn" id="export-all" title="Export all screenshots as ZIP">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
-                        </svg>
-                        Export All
-                    </button>
+                    <div class="export-all-row">
+                        <button class="export-btn export-all-btn" id="export-all" title="Export all screenshots as ZIP">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+                            </svg>
+                            Export All
+                        </button>
+                        <button class="export-btn export-sizes-btn" id="export-all-sizes" title="Export for all required store sizes">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="2" y="3" width="7" height="12" rx="1"/>
+                                <rect x="11" y="5" width="5" height="8" rx="1"/>
+                                <rect x="18" y="2" width="4" height="14" rx="1"/>
+                                <line x1="2" y1="20" x2="22" y2="20"/>
+                            </svg>
+                            All Sizes
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
 
         <!-- Main Canvas Area -->
         <div class="canvas-area">
+            <div class="undo-redo-toolbar">
+                <button class="undo-redo-btn disabled" id="undo-btn" title="Undo (Ctrl+Z)" disabled>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="1 4 1 10 7 10"/>
+                        <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+                    </svg>
+                </button>
+                <button class="undo-redo-btn disabled" id="redo-btn" title="Redo (Ctrl+Shift+Z)" disabled>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="23 4 23 10 17 10"/>
+                        <path d="M20.49 15a9 9 0 1 1-2.13-9.36L23 10"/>
+                    </svg>
+                </button>
+                <div class="toolbar-divider"></div>
+                <button class="batch-apply-toggle" id="batch-apply-toggle" title="Apply changes to all screenshots at once">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="2" y="2" width="8" height="8" rx="1"/>
+                        <rect x="14" y="2" width="8" height="8" rx="1"/>
+                        <rect x="2" y="14" width="8" height="8" rx="1"/>
+                        <rect x="14" y="14" width="8" height="8" rx="1"/>
+                    </svg>
+                    Batch
+                </button>
+            </div>
             <div class="preview-strip">
                 <div class="side-preview side-preview-far-left" id="side-preview-far-left">
                     <canvas id="preview-canvas-far-left"></canvas>
@@ -807,6 +862,22 @@
                 </div>
 
                 <div class="control-group">
+                    <label class="control-label">Text Horizontal Offset</label>
+                    <div class="control-row">
+                        <input type="range" id="text-offset-x" min="0" max="100" value="50">
+                        <span class="range-value" id="text-offset-x-value">50%</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label class="control-label">Text Rotation</label>
+                    <div class="control-row">
+                        <input type="range" id="text-rotation" min="-180" max="180" value="0">
+                        <span class="range-value" id="text-rotation-value">0°</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
                     <label class="control-label">Line Height</label>
                     <div class="control-row">
                         <input type="range" id="line-height" min="80" max="250" value="110">
@@ -814,6 +885,87 @@
                     </div>
                 </div>
                 </div><!-- end headline-options -->
+
+                <div class="divider"></div>
+
+                <div class="control-group">
+                    <div class="toggle-row collapsible collapsed" data-target="text-shadow-options">
+                        <span class="toggle-label">
+                            <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="6 9 12 15 18 9"/>
+                            </svg>
+                            Text Shadow
+                        </span>
+                        <div class="toggle" id="text-shadow-toggle"></div>
+                    </div>
+                </div>
+
+                <div id="text-shadow-options" style="display: none;">
+                    <div class="control-group">
+                        <label class="control-label">Shadow Color</label>
+                        <div class="color-input-wrapper">
+                            <input type="color" id="text-shadow-color" value="#000000">
+                            <input type="text" id="text-shadow-color-hex" value="#000000">
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <label class="control-label">Shadow Blur</label>
+                        <div class="control-row">
+                            <input type="range" id="text-shadow-blur" min="0" max="50" value="10">
+                            <span class="range-value" id="text-shadow-blur-value">10px</span>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <label class="control-label">Shadow X</label>
+                        <div class="control-row">
+                            <input type="range" id="text-shadow-x" min="-30" max="30" value="2">
+                            <span class="range-value" id="text-shadow-x-value">2px</span>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <label class="control-label">Shadow Y</label>
+                        <div class="control-row">
+                            <input type="range" id="text-shadow-y" min="-30" max="30" value="2">
+                            <span class="range-value" id="text-shadow-y-value">2px</span>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <label class="control-label">Shadow Opacity</label>
+                        <div class="control-row">
+                            <input type="range" id="text-shadow-opacity" min="0" max="100" value="50">
+                            <span class="range-value" id="text-shadow-opacity-value">50%</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <div class="toggle-row collapsible collapsed" data-target="text-outline-options">
+                        <span class="toggle-label">
+                            <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="6 9 12 15 18 9"/>
+                            </svg>
+                            Text Outline
+                        </span>
+                        <div class="toggle" id="text-outline-toggle"></div>
+                    </div>
+                </div>
+
+                <div id="text-outline-options" style="display: none;">
+                    <div class="control-group">
+                        <label class="control-label">Outline Color</label>
+                        <div class="color-input-wrapper">
+                            <input type="color" id="text-outline-color" value="#000000">
+                            <input type="text" id="text-outline-color-hex" value="#000000">
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <label class="control-label">Outline Width</label>
+                        <div class="control-row">
+                            <input type="range" id="text-outline-width" min="1" max="20" value="2">
+                            <span class="range-value" id="text-outline-width-value">2px</span>
+                        </div>
+                    </div>
+                </div>
 
                 <div class="divider"></div>
 
@@ -1194,6 +1346,88 @@
         </div>
     </div>
 
+    <!-- MCP Server Modal -->
+    <div class="modal-overlay" id="mcp-modal">
+        <div class="modal mcp-modal">
+            <div class="modal-header">
+                <h3 class="modal-title">MCP Server</h3>
+                <button class="modal-close" id="mcp-modal-close">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M18 6L6 18M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+
+            <div class="settings-section">
+                <h4 class="settings-section-title">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <path d="M12 6v6l4 2"/>
+                    </svg>
+                    Server Status
+                </h4>
+                <div class="mcp-status-row">
+                    <span class="mcp-status-dot" id="mcp-status-dot"></span>
+                    <span class="mcp-status-label" id="mcp-status-label">Stopped</span>
+                    <span class="mcp-status-pid" id="mcp-status-pid"></span>
+                    <button class="modal-btn modal-btn-confirm mcp-toggle-btn" id="mcp-toggle-btn">Start</button>
+                </div>
+                <div class="mcp-browser-notice" id="mcp-browser-notice" style="display: none;">
+                    <p class="settings-description">Server management requires the Electron desktop app. In the browser, start the server from a terminal:</p>
+                    <div class="mcp-command-box">
+                        <code id="mcp-terminal-cmd">npm run mcp:start</code>
+                        <button class="mcp-copy-btn" data-copy-target="mcp-terminal-cmd" title="Copy">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h4 class="settings-section-title">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="4 17 10 11 4 5"/>
+                        <line x1="12" y1="19" x2="20" y2="19"/>
+                    </svg>
+                    Server Log
+                </h4>
+                <pre class="mcp-log" id="mcp-log"></pre>
+                <button class="mcp-clear-log-btn" id="mcp-clear-log">Clear</button>
+            </div>
+
+            <div class="settings-section">
+                <h4 class="settings-section-title">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"/>
+                        <rect x="8" y="2" width="8" height="4" rx="1"/>
+                    </svg>
+                    Agent Configuration
+                </h4>
+                <p class="settings-description">Copy the configuration below into your AI agent's MCP settings to connect.</p>
+                <div class="mcp-config-tabs">
+                    <button class="mcp-config-tab active" data-mcp-tab="claude-desktop">Claude Desktop</button>
+                    <button class="mcp-config-tab" data-mcp-tab="codex">Codex</button>
+                    <button class="mcp-config-tab" data-mcp-tab="generic">Generic</button>
+                </div>
+                <div class="mcp-config-panel" id="mcp-config-panel">
+                    <textarea class="mcp-config-textarea" id="mcp-config-textarea" readonly></textarea>
+                    <button class="mcp-copy-btn mcp-copy-config-btn" id="mcp-copy-config" title="Copy configuration">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                        <span>Copy</span>
+                    </button>
+                </div>
+                <div class="mcp-server-path">
+                    <span class="mcp-path-label">Server path:</span>
+                    <code id="mcp-server-path-value">mcp/server.js</code>
+                </div>
+            </div>
+
+            <div class="modal-buttons">
+                <button class="modal-btn modal-btn-cancel" id="mcp-modal-done">Done</button>
+            </div>
+        </div>
+    </div>
+
     <!-- About Modal -->
     <div class="modal-overlay" id="about-modal">
         <div class="modal">
@@ -1357,6 +1591,47 @@
                         <span class="duplicate-option-desc">Don't upload this file</span>
                     </div>
                 </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Export All Sizes Modal -->
+    <div class="modal-overlay" id="export-sizes-modal">
+        <div class="modal">
+            <h3 class="modal-title">Export All Sizes</h3>
+            <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 16px;">Select a store preset to export all screenshots at every required size in a single ZIP.</p>
+            <div class="export-sizes-presets" id="export-sizes-presets">
+                <button class="export-preset-btn" data-preset="apple">
+                    <span class="export-preset-icon">&#63743;</span>
+                    <span class="export-preset-info">
+                        <span class="export-preset-name">Apple App Store</span>
+                        <span class="export-preset-detail">6.9" + 6.7" + 6.5"</span>
+                    </span>
+                </button>
+                <button class="export-preset-btn" data-preset="apple-full">
+                    <span class="export-preset-icon">&#63743;</span>
+                    <span class="export-preset-info">
+                        <span class="export-preset-name">Apple Full</span>
+                        <span class="export-preset-detail">All iPhones + iPads</span>
+                    </span>
+                </button>
+                <button class="export-preset-btn" data-preset="google">
+                    <span class="export-preset-icon">&#9654;</span>
+                    <span class="export-preset-info">
+                        <span class="export-preset-name">Google Play Store</span>
+                        <span class="export-preset-detail">Phone + Phone HD</span>
+                    </span>
+                </button>
+                <button class="export-preset-btn" data-preset="all-stores">
+                    <span class="export-preset-icon">&#9733;</span>
+                    <span class="export-preset-info">
+                        <span class="export-preset-name">All Stores</span>
+                        <span class="export-preset-detail">Apple + Google + Tablets</span>
+                    </span>
+                </button>
+            </div>
+            <div class="modal-buttons">
+                <button class="modal-btn modal-btn-cancel" id="export-sizes-cancel">Cancel</button>
             </div>
         </div>
     </div>

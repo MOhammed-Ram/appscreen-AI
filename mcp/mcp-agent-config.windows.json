@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "appscreen": {
+      "command": "node",
+      "args": [
+        "D:/AndroidStudioProjects/appscreen-AI/mcp/server.js"
+      ]
+    }
+  }
+}
