@@ -52,6 +52,12 @@ const state = {
                 color: '#1d1d1f',
                 width: 12,
                 opacity: 100
+            },
+            deviceFrame: {
+                enabled: false,
+                type: 'iphone',       // 'iphone' | 'android' | 'ipad'
+                colorScheme: 'dark',  // 'dark' | 'light' | 'custom'
+                customColor: '#1d1d1f'
             }
         },
         text: {
@@ -97,6 +103,59 @@ const state = {
             subheadlineColor: '#ffffff',
             subheadlineOpacity: 70
         }
+    }
+};
+
+// Device frame configuration — padding and detail ratios per device type
+// All pad ratios are relative to the screen (screenshot) dimensions.
+// cornerRadiusRatio is relative to body width.
+const DEVICE_FRAME_CONFIGS = {
+    iphone: {
+        cornerRadiusRatio: 0.16,
+        padSide: 0.06,
+        padTop: 0.12,
+        padBottom: 0.08,
+        darkColor: '#1d1d1f',
+        lightColor: '#f5f5f7',
+        darkHighlight: 'rgba(255,255,255,0.08)',
+        lightHighlight: 'rgba(0,0,0,0.06)',
+        // Dynamic Island
+        islandWidthRatio: 0.28,
+        islandHeightRatio: 0.038,
+        islandTopRatio: 0.018,
+        // Home indicator
+        indicatorWidthRatio: 0.36,
+        indicatorHeightRatio: 0.006,
+        indicatorBottomRatio: 0.025,
+        // Side button bumps (height as fraction of body height)
+        buttonWidthRatio: 0.025,
+        buttonHeightRatios: [0.08, 0.05, 0.05]
+    },
+    android: {
+        cornerRadiusRatio: 0.12,
+        padSide: 0.05,
+        padTop: 0.07,
+        padBottom: 0.07,
+        darkColor: '#202124',
+        lightColor: '#f8f9fa',
+        darkHighlight: 'rgba(255,255,255,0.06)',
+        lightHighlight: 'rgba(0,0,0,0.05)',
+        // Camera punch-hole
+        cameraRadiusRatio: 0.022,
+        cameraTopRatio: 0.035
+    },
+    ipad: {
+        cornerRadiusRatio: 0.08,
+        padSide: 0.07,
+        padTop: 0.07,
+        padBottom: 0.07,
+        darkColor: '#1c1c1e',
+        lightColor: '#f2f2f7',
+        darkHighlight: 'rgba(255,255,255,0.06)',
+        lightHighlight: 'rgba(0,0,0,0.04)',
+        // Front camera dot
+        cameraRadiusRatio: 0.015,
+        cameraTopRatio: 0.04
     }
 };
 
@@ -170,6 +229,9 @@ function applyScreenshotSettingToScreenshot(screenshot, key, value) {
         const parts = key.split('.');
         let obj = screenshot.screenshot;
         for (let i = 0; i < parts.length - 1; i++) {
+            if (obj[parts[i]] === undefined || obj[parts[i]] === null) {
+                obj[parts[i]] = {};
+            }
             obj = obj[parts[i]];
         }
         obj[parts[parts.length - 1]] = value;
@@ -341,7 +403,7 @@ async function fetchAllGoogleFonts() {
         if (apiKey) {
             url.searchParams.set('key', apiKey);
         }
-        
+
         try {
             const response = await fetch(url);
             if (response.ok) {
@@ -1725,6 +1787,12 @@ function resetStateToDefaults() {
                 color: '#1d1d1f',
                 width: 12,
                 opacity: 100
+            },
+            deviceFrame: {
+                enabled: false,
+                type: 'iphone',
+                colorScheme: 'dark',
+                customColor: '#1d1d1f'
             }
         },
         text: {
@@ -2150,6 +2218,23 @@ function syncUIWithState() {
     document.getElementById('frame-width-value').textContent = formatValue(ss.frame.width) + 'px';
     document.getElementById('frame-opacity').value = ss.frame.opacity;
     document.getElementById('frame-opacity-value').textContent = formatValue(ss.frame.opacity) + '%';
+
+    // Device Frame
+    const dfSettings = ss.deviceFrame || { enabled: false, type: 'iphone', colorScheme: 'dark', customColor: '#1d1d1f' };
+    document.getElementById('device-frame-toggle').classList.toggle('active', dfSettings.enabled);
+    const dfRow = document.getElementById('device-frame-toggle').closest('.toggle-row');
+    if (dfRow) dfRow.classList.toggle('collapsed', !dfSettings.enabled);
+    document.getElementById('device-frame-options').style.display = dfSettings.enabled ? 'block' : 'none';
+    document.querySelectorAll('#device-frame-type-selector button').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.frameType === dfSettings.type);
+    });
+    document.querySelectorAll('#device-frame-color-selector button').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.scheme === dfSettings.colorScheme);
+    });
+    document.getElementById('device-frame-custom-color-row').style.display =
+        dfSettings.colorScheme === 'custom' ? 'flex' : 'none';
+    document.getElementById('device-frame-custom-color').value = dfSettings.customColor || '#1d1d1f';
+    document.getElementById('device-frame-custom-color-hex').value = dfSettings.customColor || '#1d1d1f';
 
     // Text
     const currentHeadline = txt.headlines ? (txt.headlines[txt.currentHeadlineLang || 'en'] || '') : (txt.headline || '');
@@ -3174,6 +3259,63 @@ function setupEventListeners() {
         setScreenshotSetting('frame.opacity', parseInt(e.target.value));
         document.getElementById('frame-opacity-value').textContent = formatValue(e.target.value) + '%';
         updateCanvas();
+    });
+
+    // Device Frame toggle
+    document.getElementById('device-frame-toggle').addEventListener('click', function () {
+        this.classList.toggle('active');
+        const enabled = this.classList.contains('active');
+        setScreenshotSetting('deviceFrame.enabled', enabled);
+        const row = this.closest('.toggle-row');
+        if (enabled) {
+            if (row) row.classList.remove('collapsed');
+            document.getElementById('device-frame-options').style.display = 'block';
+        } else {
+            if (row) row.classList.add('collapsed');
+            document.getElementById('device-frame-options').style.display = 'none';
+        }
+        updateCanvas();
+        scheduleHistoryCommit();
+    });
+
+    // Device frame type selector
+    document.querySelectorAll('#device-frame-type-selector button').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('#device-frame-type-selector button').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            setScreenshotSetting('deviceFrame.type', btn.dataset.frameType);
+            updateCanvas();
+            scheduleHistoryCommit();
+        });
+    });
+
+    // Device frame color scheme
+    document.querySelectorAll('#device-frame-color-selector button').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('#device-frame-color-selector button').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const scheme = btn.dataset.scheme;
+            setScreenshotSetting('deviceFrame.colorScheme', scheme);
+            document.getElementById('device-frame-custom-color-row').style.display =
+                scheme === 'custom' ? 'flex' : 'none';
+            updateCanvas();
+            scheduleHistoryCommit();
+        });
+    });
+
+    // Device frame custom color picker
+    document.getElementById('device-frame-custom-color').addEventListener('input', (e) => {
+        setScreenshotSetting('deviceFrame.customColor', e.target.value);
+        document.getElementById('device-frame-custom-color-hex').value = e.target.value;
+        updateCanvas();
+    });
+
+    document.getElementById('device-frame-custom-color-hex').addEventListener('input', (e) => {
+        if (/^#[0-9A-Fa-f]{6}$/.test(e.target.value)) {
+            setScreenshotSetting('deviceFrame.customColor', e.target.value);
+            document.getElementById('device-frame-custom-color').value = e.target.value;
+            updateCanvas();
+        }
     });
 
     // Headline toggle
@@ -5871,23 +6013,22 @@ function drawScreenshotToContext(context, dims, img, settings) {
 
     // Scale corner radius with image size
     const radius = (settings.cornerRadius || 0) * (imgWidth / 400);
+    const useDeviceFrame = settings.deviceFrame && settings.deviceFrame.enabled;
 
-    // Draw shadow first (needs a filled shape, not clipped)
-    if (settings.shadow && settings.shadow.enabled) {
+    // Device bezel (owns shadow) OR plain shadow on screen rect
+    if (useDeviceFrame) {
+        drawDeviceBezelToContext(context, x, y, imgWidth, imgHeight, settings);
+    } else if (settings.shadow && settings.shadow.enabled) {
         const shadowOpacity = settings.shadow.opacity / 100;
-        const shadowColor = settings.shadow.color + Math.round(shadowOpacity * 255).toString(16).padStart(2, '0');
-        context.shadowColor = shadowColor;
+        const shadowHex = Math.round(shadowOpacity * 255).toString(16).padStart(2, '0');
+        context.shadowColor = settings.shadow.color + shadowHex;
         context.shadowBlur = settings.shadow.blur;
         context.shadowOffsetX = settings.shadow.x;
         context.shadowOffsetY = settings.shadow.y;
-
-        // Draw filled rounded rect for shadow
         context.fillStyle = '#000';
         context.beginPath();
         context.roundRect(x, y, imgWidth, imgHeight, radius);
         context.fill();
-
-        // Reset shadow before drawing image
         context.shadowColor = 'transparent';
         context.shadowBlur = 0;
         context.shadowOffsetX = 0;
@@ -5902,17 +6043,26 @@ function drawScreenshotToContext(context, dims, img, settings) {
 
     context.restore();
 
-    // Draw device frame if enabled
+    // Helper to re-apply transform for post-clip overlays
+    function applyCtxTransform(c) {
+        c.translate(centerX, centerY);
+        if (settings.rotation !== 0) c.rotate(settings.rotation * Math.PI / 180);
+        if (settings.perspective !== 0) c.transform(1, settings.perspective * 0.01, 0, 1, 0, 0);
+        c.translate(-centerX, -centerY);
+    }
+
+    // Hardware details on top of screenshot
+    if (useDeviceFrame) {
+        context.save();
+        applyCtxTransform(context);
+        drawHardwareDetailsToContext(context, x, y, imgWidth, imgHeight, settings);
+        context.restore();
+    }
+
+    // Simple border stroke (coexists with device frame)
     if (settings.frame && settings.frame.enabled) {
         context.save();
-        context.translate(centerX, centerY);
-        if (settings.rotation !== 0) {
-            context.rotate(settings.rotation * Math.PI / 180);
-        }
-        if (settings.perspective !== 0) {
-            context.transform(1, settings.perspective * 0.01, 0, 1, 0, 0);
-        }
-        context.translate(-centerX, -centerY);
+        applyCtxTransform(context);
         drawDeviceFrameToContext(context, x, y, imgWidth, imgHeight, settings);
         context.restore();
     }
@@ -6223,24 +6373,23 @@ function drawScreenshot() {
 
     ctx.translate(-centerX, -centerY);
 
-    // Draw rounded rectangle with screenshot
-    const radius = settings.cornerRadius * (imgWidth / 400); // Scale radius with image
+    // Scale corner radius with image
+    const radius = settings.cornerRadius * (imgWidth / 400);
+    const useDeviceFrame = settings.deviceFrame && settings.deviceFrame.enabled;
 
-    // Draw shadow first (needs a filled shape, not clipped)
-    if (settings.shadow.enabled) {
+    // Draw device bezel (owns shadow) OR plain shadow on screen rect
+    if (useDeviceFrame) {
+        drawDeviceBezelToContext(ctx, x, y, imgWidth, imgHeight, settings);
+    } else if (settings.shadow.enabled) {
         const shadowColor = hexToRgba(settings.shadow.color, settings.shadow.opacity / 100);
         ctx.shadowColor = shadowColor;
         ctx.shadowBlur = settings.shadow.blur;
         ctx.shadowOffsetX = settings.shadow.x;
         ctx.shadowOffsetY = settings.shadow.y;
-
-        // Draw filled rounded rect for shadow
         ctx.fillStyle = '#000';
         ctx.beginPath();
         roundRect(ctx, x, y, imgWidth, imgHeight, radius);
         ctx.fill();
-
-        // Reset shadow before drawing image
         ctx.shadowColor = 'transparent';
         ctx.shadowBlur = 0;
         ctx.shadowOffsetX = 0;
@@ -6255,19 +6404,154 @@ function drawScreenshot() {
 
     ctx.restore();
 
-    // Draw device frame if enabled (needs separate transform context)
+    // Helper to re-apply the same transform for post-clip overlays
+    function applyTransform(c) {
+        c.translate(centerX, centerY);
+        if (settings.rotation !== 0) c.rotate(settings.rotation * Math.PI / 180);
+        if (settings.perspective !== 0) c.transform(1, settings.perspective * 0.01, 0, 1, 0, 0);
+        c.translate(-centerX, -centerY);
+    }
+
+    // Draw hardware details on top of the screenshot (Dynamic Island, buttons, etc.)
+    if (useDeviceFrame) {
+        ctx.save();
+        applyTransform(ctx);
+        drawHardwareDetailsToContext(ctx, x, y, imgWidth, imgHeight, settings);
+        ctx.restore();
+    }
+
+    // Draw simple border stroke if enabled (outermost layer, coexists with device frame)
     if (settings.frame.enabled) {
         ctx.save();
-        ctx.translate(centerX, centerY);
-        if (settings.rotation !== 0) {
-            ctx.rotate(settings.rotation * Math.PI / 180);
-        }
-        if (settings.perspective !== 0) {
-            ctx.transform(1, settings.perspective * 0.01, 0, 1, 0, 0);
-        }
-        ctx.translate(-centerX, -centerY);
+        applyTransform(ctx);
         drawDeviceFrame(x, y, imgWidth, imgHeight);
         ctx.restore();
+    }
+}
+
+function getDeviceFrameColor(cfg, deviceFrame) {
+    if (deviceFrame.colorScheme === 'light') return cfg.lightColor;
+    if (deviceFrame.colorScheme === 'custom') return deviceFrame.customColor || cfg.darkColor;
+    return cfg.darkColor;
+}
+
+function drawDeviceBezelToContext(context, x, y, screenW, screenH, settings) {
+    const df = settings.deviceFrame;
+    const cfg = DEVICE_FRAME_CONFIGS[df.type] || DEVICE_FRAME_CONFIGS.iphone;
+    const bodyColor = getDeviceFrameColor(cfg, df);
+
+    const padSide   = screenW * cfg.padSide;
+    const padTop    = screenH * cfg.padTop;
+    const padBottom = screenH * cfg.padBottom;
+
+    const bodyX = x - padSide;
+    const bodyY = y - padTop;
+    const bodyW = screenW + padSide * 2;
+    const bodyH = screenH + padTop + padBottom;
+    const bodyR = bodyW * cfg.cornerRadiusRatio;
+
+    // Draw shadow on body rect when shadow is enabled
+    if (settings.shadow && settings.shadow.enabled) {
+        const shadowOpacity = settings.shadow.opacity / 100;
+        const shadowHex = Math.round(shadowOpacity * 255).toString(16).padStart(2, '0');
+        context.shadowColor = settings.shadow.color + shadowHex;
+        context.shadowBlur = settings.shadow.blur;
+        context.shadowOffsetX = settings.shadow.x;
+        context.shadowOffsetY = settings.shadow.y;
+    }
+
+    context.fillStyle = bodyColor;
+    context.beginPath();
+    context.roundRect(bodyX, bodyY, bodyW, bodyH, bodyR);
+    context.fill();
+
+    // Reset shadow
+    context.shadowColor = 'transparent';
+    context.shadowBlur = 0;
+    context.shadowOffsetX = 0;
+    context.shadowOffsetY = 0;
+
+    // Subtle inner edge highlight for depth
+    const highlight = df.colorScheme === 'light' ? cfg.lightHighlight : cfg.darkHighlight;
+    const edgeLine = Math.max(1, bodyW * 0.004);
+    context.strokeStyle = highlight;
+    context.lineWidth = edgeLine;
+    context.beginPath();
+    context.roundRect(bodyX + edgeLine / 2, bodyY + edgeLine / 2, bodyW - edgeLine, bodyH - edgeLine, bodyR);
+    context.stroke();
+}
+
+function drawHardwareDetailsToContext(context, x, y, screenW, screenH, settings) {
+    const df = settings.deviceFrame;
+    const cfg = DEVICE_FRAME_CONFIGS[df.type] || DEVICE_FRAME_CONFIGS.iphone;
+
+    const padSide   = screenW * cfg.padSide;
+    const padTop    = screenH * cfg.padTop;
+    const padBottom = screenH * cfg.padBottom;
+
+    const bodyX = x - padSide;
+    const bodyY = y - padTop;
+    const bodyW = screenW + padSide * 2;
+    const bodyH = screenH + padTop + padBottom;
+
+    if (df.type === 'iphone') {
+        // Dynamic Island — black pill at top-center of screen area
+        const islandW = screenW * cfg.islandWidthRatio;
+        const islandH = screenH * cfg.islandHeightRatio;
+        const islandX = x + (screenW - islandW) / 2;
+        const islandY = y + screenH * cfg.islandTopRatio;
+        context.fillStyle = '#000000';
+        context.beginPath();
+        context.roundRect(islandX, islandY, islandW, islandH, islandH / 2);
+        context.fill();
+
+        // Home indicator — thin pill at bottom of screen area
+        const indW = screenW * cfg.indicatorWidthRatio;
+        const indH = screenH * cfg.indicatorHeightRatio;
+        const indX = x + (screenW - indW) / 2;
+        const indY = y + screenH - screenH * cfg.indicatorBottomRatio - indH;
+        context.fillStyle = df.colorScheme === 'light' ? 'rgba(0,0,0,0.25)' : 'rgba(255,255,255,0.35)';
+        context.beginPath();
+        context.roundRect(indX, indY, indW, indH, indH / 2);
+        context.fill();
+
+        // Side button bumps on body edges
+        const btnW = bodyW * cfg.buttonWidthRatio;
+        const buttonColor = df.colorScheme === 'light' ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.10)';
+        context.fillStyle = buttonColor;
+        const btnSpecs = [
+            [0.24, cfg.buttonHeightRatios[0], 'left'],
+            [0.34, cfg.buttonHeightRatios[1], 'left'],
+            [0.27, cfg.buttonHeightRatios[2], 'right']
+        ];
+        btnSpecs.forEach(([relY, heightFrac, side]) => {
+            const bh = bodyH * heightFrac;
+            const by = bodyY + bodyH * relY;
+            const bx = side === 'left' ? bodyX - btnW * 0.6 : bodyX + bodyW - btnW * 0.4;
+            context.beginPath();
+            context.roundRect(bx, by, btnW, bh, Math.min(btnW / 2, 3));
+            context.fill();
+        });
+
+    } else if (df.type === 'android') {
+        // Camera punch-hole — small black circle at top-center of screen
+        const camR = screenW * cfg.cameraRadiusRatio;
+        const camX = x + screenW / 2;
+        const camY = y + screenH * cfg.cameraTopRatio;
+        context.fillStyle = '#000000';
+        context.beginPath();
+        context.arc(camX, camY, camR, 0, Math.PI * 2);
+        context.fill();
+
+    } else if (df.type === 'ipad') {
+        // Front camera dot — small circle centered on top body area
+        const camR = bodyW * cfg.cameraRadiusRatio;
+        const camX = bodyX + bodyW / 2;
+        const camY = bodyY + bodyH * cfg.cameraTopRatio;
+        context.fillStyle = df.colorScheme === 'light' ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.18)';
+        context.beginPath();
+        context.arc(camX, camY, camR, 0, Math.PI * 2);
+        context.fill();
     }
 }
 
@@ -6981,6 +7265,52 @@ window.__appscreenAutomation = {
         await waitForRenderStability();
         flushStateSave();
         return { imported: normalized.length, screenshots: state.screenshots.length };
+    },
+
+    async applyProjectJson(parsedData) {
+        if (!parsedData || !parsedData.appscreen || !Array.isArray(parsedData.screenshots)) {
+            throw new Error('Invalid project JSON data');
+        }
+
+        const projectName = parsedData.projectName || createDefaultProjectName();
+        const newId = 'project_' + Date.now();
+
+        projects.push({ id: newId, name: projectName, screenshotCount: parsedData.screenshots.length });
+        saveProjectsMeta();
+
+        const projectRecord = {
+            id: newId,
+            formatVersion: parsedData.formatVersion || 3,
+            screenshots: parsedData.screenshots,
+            selectedIndex: parsedData.selectedIndex || 0,
+            outputDevice: parsedData.outputDevice || 'iphone-6.9',
+            customWidth: parsedData.customWidth || 1290,
+            customHeight: parsedData.customHeight || 2796,
+            currentLanguage: parsedData.currentLanguage || 'en',
+            projectLanguages: parsedData.projectLanguages || ['en'],
+            defaults: parsedData.defaults || undefined
+        };
+
+        if (db) {
+            await new Promise((resolve, reject) => {
+                const transaction = db.transaction([PROJECTS_STORE], 'readwrite');
+                const store = transaction.objectStore(PROJECTS_STORE);
+                const req = store.put(projectRecord);
+                transaction.oncomplete = resolve;
+                transaction.onerror = reject;
+            });
+        }
+
+        await switchProject(newId);
+        updateProjectSelector();
+        await waitForRenderStability();
+
+        return {
+            projectId: newId,
+            projectName,
+            screenshots: state.screenshots.length,
+            languages: state.projectLanguages
+        };
     },
 
     async applyListingSpec(spec = {}) {

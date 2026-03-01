@@ -658,6 +658,46 @@
 
                     <div class="divider"></div>
 
+                    <div class="control-group">
+                        <div class="toggle-row collapsible collapsed" data-target="device-frame-options">
+                            <span class="toggle-label">
+                                <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="6 9 12 15 18 9"/>
+                                </svg>
+                                Device Frame
+                            </span>
+                            <div class="toggle" id="device-frame-toggle"></div>
+                        </div>
+                    </div>
+
+                    <div id="device-frame-options" style="display: none;">
+                        <div class="control-group">
+                            <label class="control-label">Device Type</label>
+                            <div class="btn-group" id="device-frame-type-selector">
+                                <button class="active" data-frame-type="iphone">iPhone</button>
+                                <button data-frame-type="android">Android</button>
+                                <button data-frame-type="ipad">iPad</button>
+                            </div>
+                        </div>
+                        <div class="control-group">
+                            <label class="control-label">Color</label>
+                            <div class="btn-group" id="device-frame-color-selector">
+                                <button class="active" data-scheme="dark">Dark</button>
+                                <button data-scheme="light">Light</button>
+                                <button data-scheme="custom">Custom</button>
+                            </div>
+                        </div>
+                        <div class="control-group" id="device-frame-custom-color-row" style="display: none;">
+                            <label class="control-label">Custom Color</label>
+                            <div class="color-input-wrapper">
+                                <input type="color" id="device-frame-custom-color" value="#1d1d1f">
+                                <input type="text" id="device-frame-custom-color-hex" value="#1d1d1f">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="divider"></div>
+
                 <div class="control-group">
                     <div class="toggle-row collapsible" data-target="shadow-options">
                         <span class="toggle-label">

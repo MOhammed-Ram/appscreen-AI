@@ -2,16 +2,43 @@
 
 const fs = require('fs');
 const path = require('path');
+
+const LOG_FILE = path.join(__dirname, 'mcp_antigravity_debug.log');
+function logDebug(msg) {
+    fs.appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`);
+}
+logDebug('--- SERVER START ---');
+logDebug(`Node path: ${process.execPath}`);
+logDebug(`Cwd: ${process.cwd()}`);
+logDebug(`Env APPSCREEN_ROOT: ${process.env.APPSCREEN_ROOT}`);
+
+process.on('uncaughtException', (err) => {
+    logDebug(`UNCAUGHT: ${err.stack || err}`);
+    process.exit(1);
+});
+process.on('unhandledRejection', (reason, promise) => {
+    logDebug(`UNHANDLED REJECTION: ${reason.stack || reason}`);
+    process.exit(1);
+});
+
+logDebug('Requiring http...');
 const http = require('http');
+logDebug('Requiring crypto...');
 const crypto = require('crypto');
+logDebug('Requiring playwright...');
 const { chromium } = require('playwright');
+logDebug('Requiring zod...');
 const { z } = require('zod');
+logDebug('Requiring mcp sdk server...');
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
+logDebug('Requiring mcp sdk stdio...');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
+logDebug('Requiring mcp sdk types...');
 const {
     ListToolsRequestSchema,
     CallToolRequestSchema
 } = require('@modelcontextprotocol/sdk/types.js');
+logDebug('All requires finished.');
 
 const APP_ROOT = path.resolve(__dirname, '..');
 const MCP_DEFAULT_TIMEOUT_MS = 120000;
@@ -70,11 +97,114 @@ const listingScreenSchema = z.object({
         subheadline: z.record(z.string()).optional()
     }).optional(),
     style: z.object({
-        background: z.record(z.any()).optional(),
-        screenshot: z.record(z.any()).optional(),
-        text: z.record(z.any()).optional()
+        background: z.object({
+            type: z.enum(['solid', 'gradient', 'image']).optional(),
+            solid: z.string().optional(),
+            gradient: z.object({
+                angle: z.number().optional(),
+                stops: z.array(z.object({
+                    color: z.string(),
+                    position: z.number()
+                })).optional()
+            }).optional(),
+            imageSrc: z.string().nullable().optional(),
+            imageFit: z.enum(['cover', 'contain', 'stretch']).optional(),
+            imageBlur: z.number().optional(),
+            overlayColor: z.string().optional(),
+            overlayOpacity: z.number().optional(),
+            noise: z.boolean().optional(),
+            noiseIntensity: z.number().optional()
+        }).passthrough().optional(),
+        screenshot: z.object({
+            scale: z.number().optional(),
+            x: z.number().optional(),
+            y: z.number().optional(),
+            rotation: z.number().optional(),
+            perspective: z.number().optional(),
+            cornerRadius: z.number().optional(),
+            use3D: z.boolean().optional(),
+            device3D: z.enum(['iphone', 'android']).optional(),
+            rotation3D: z.object({
+                x: z.number(),
+                y: z.number(),
+                z: z.number()
+            }).optional(),
+            shadow: z.object({
+                enabled: z.boolean().optional(),
+                color: z.string().optional(),
+                blur: z.number().optional(),
+                opacity: z.number().optional(),
+                x: z.number().optional(),
+                y: z.number().optional()
+            }).optional(),
+            frame: z.object({
+                enabled: z.boolean().optional(),
+                color: z.string().optional(),
+                width: z.number().optional(),
+                opacity: z.number().min(0).max(100).optional()
+            }).optional(),
+            deviceFrame: z.object({
+                enabled: z.boolean().optional(),
+                type: z.enum(['iphone', 'android', 'ipad']).optional(),
+                colorScheme: z.enum(['dark', 'light', 'custom']).optional(),
+                customColor: z.string().optional()
+            }).optional()
+        }).optional(),
+        text: z.object({
+            // Headline
+            headlineEnabled: z.boolean().optional(),
+            headlineFont: z.string().optional(),
+            headlineSize: z.number().optional(),
+            headlineColor: z.string().optional(),
+            headlineWeight: z.string().optional(),
+            headlineItalic: z.boolean().optional(),
+            headlineUnderline: z.boolean().optional(),
+            headlineStrikethrough: z.boolean().optional(),
+            // Subheadline
+            subheadlineEnabled: z.boolean().optional(),
+            subheadlineFont: z.string().optional(),
+            subheadlineSize: z.number().optional(),
+            subheadlineColor: z.string().optional(),
+            subheadlineOpacity: z.number().min(0).max(100).optional(),
+            subheadlineWeight: z.string().optional(),
+            subheadlineItalic: z.boolean().optional(),
+            subheadlineUnderline: z.boolean().optional(),
+            subheadlineStrikethrough: z.boolean().optional(),
+            // Layout
+            position: z.enum(['top', 'bottom']).optional(),
+            offsetX: z.number().optional(),
+            offsetY: z.number().optional(),
+            textRotation: z.number().optional(),
+            lineHeight: z.number().optional(),
+            // Effects
+            textShadow: z.object({
+                enabled: z.boolean().optional(),
+                color: z.string().optional(),
+                blur: z.number().optional(),
+                x: z.number().optional(),
+                y: z.number().optional(),
+                opacity: z.number().optional()
+            }).optional(),
+            textOutline: z.object({
+                enabled: z.boolean().optional(),
+                color: z.string().optional(),
+                width: z.number().optional()
+            }).optional()
+        }).passthrough().optional()
     }).optional()
 });
+
+const projectJsonSpecSchema = z.object({
+    appscreen: z.literal(true),
+    projectName: z.string().optional(),
+    exportDate: z.string().optional(),
+    formatVersion: z.number().optional(),
+    screenshots: z.array(z.record(z.any())).min(1),
+    outputDevice: z.string().optional(),
+    projectLanguages: z.array(z.string()).optional(),
+    outputMode: z.enum(['mcp-output', 'app-dir']).optional(),
+    outputDir: z.string().optional()
+}).passthrough();
 
 const listingSpecSchema = z.object({
     projectName: z.string().min(1),
@@ -549,6 +679,95 @@ async function diagnoseAppBoot() {
     }
 }
 
+async function runProjectJob(projectData, options = {}) {
+    const parsedData = projectJsonSpecSchema.parse(projectData);
+
+    const rootDir = process.env.APPSCREEN_ROOT
+        ? path.resolve(process.env.APPSCREEN_ROOT)
+        : APP_ROOT;
+    const jobId = `job_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+    const outputMode = options.outputMode || parsedData.outputMode || 'mcp-output';
+    const defaultOutputSubdir = outputMode === 'app-dir'
+        ? path.join('generated-listings', jobId)
+        : path.join('mcp-output', jobId);
+    const requestedOutputDir = options.outputDir || parsedData.outputDir || defaultOutputSubdir;
+    const outputDir = path.isAbsolute(requestedOutputDir)
+        ? path.resolve(requestedOutputDir)
+        : path.resolve(rootDir, requestedOutputDir);
+
+    const outputDevices = options.overrideDevices && options.overrideDevices.length > 0
+        ? options.overrideDevices
+        : [parsedData.outputDevice || 'iphone-6.9'];
+
+    const languages = options.overrideLanguages && options.overrideLanguages.length > 0
+        ? options.overrideLanguages
+        : parsedData.projectLanguages || ['en'];
+
+    const unsupportedDevices = outputDevices.filter((device) => !OUTPUT_PRESETS[device] && device !== 'custom');
+    if (unsupportedDevices.length > 0) {
+        throw new Error(`Unsupported output devices: ${unsupportedDevices.join(', ')}`);
+    }
+
+    ensureDir(outputDir);
+    let staticServer;
+    let session = null;
+    let combosInSession = 0;
+    const artifactPaths = [];
+    const dimensionsByDevice = {};
+
+    try {
+        staticServer = await startStaticServer(rootDir);
+
+        for (const outputDevice of outputDevices) {
+            for (const language of languages) {
+                const comboLabel = `${outputDevice}/${language}`;
+                let comboCompleted = false;
+                let lastComboError = null;
+
+                for (let attempt = 1; attempt <= 2; attempt++) {
+                    try {
+                        if (!session || combosInSession >= MAX_COMBOS_PER_SESSION) {
+                            if (session) await closeAutomationSession(session);
+                            session = await createAutomationSession(staticServer.url, { screens: [], languages: [] }, parsedData.customSize);
+
+                            await session.page.evaluate(async (json) => {
+                                await window.__appscreenAutomation.applyProjectJson(json);
+                            }, parsedData);
+
+                            combosInSession = 0;
+                        }
+
+                        await renderComboArtifacts(session, outputDevice, language, outputDir, artifactPaths, dimensionsByDevice);
+                        comboCompleted = true;
+                        combosInSession++;
+                        break;
+                    } catch (error) {
+                        lastComboError = error;
+                        if (session) await closeAutomationSession(session);
+                        session = null;
+                        combosInSession = 0;
+                    }
+                }
+
+                if (!comboCompleted) {
+                    throw new Error(`Failed rendering project combo ${comboLabel} after retry: ${lastComboError?.message || 'unknown error'}`);
+                }
+            }
+        }
+
+        return {
+            jobId,
+            outputDir,
+            outputMode,
+            artifactPaths,
+            dimensionsByDevice
+        };
+    } finally {
+        if (session) await closeAutomationSession(session);
+        if (staticServer) await staticServer.close();
+    }
+}
+
 function jsonTextResult(payload) {
     return {
         content: [
@@ -579,7 +798,125 @@ function getCapabilitiesPayload() {
         listingSpecContract: {
             required: ['projectName', 'outputDevices[]', 'languages[]', 'screens[]'],
             screenFields: ['id', 'images', 'text? (headline/subheadline maps)', 'style? (background/screenshot/text)'],
-            optional: ['defaults', 'allowPartial', 'outputMode', 'outputDir', 'assetsBaseDir', 'customSize']
+            optional: ['defaults', 'allowPartial', 'outputMode', 'outputDir', 'assetsBaseDir', 'customSize'],
+            supportedStyles: {
+                background: {
+                    type: 'solid | gradient | image',
+                    solid: 'hex color string for solid backgrounds',
+                    gradient: {
+                        angle: 'number 0–360 (degrees)',
+                        stops: 'array of {color: hex, position: 0–100} — supports 2+ stops for multi-color gradients'
+                    },
+                    image: {
+                        imageSrc: 'file path or data URL',
+                        imageFit: 'cover | contain | stretch',
+                        imageBlur: 'number (px, 0 = no blur)',
+                        overlayColor: 'hex color string',
+                        overlayOpacity: 'number 0–100'
+                    },
+                    noise: 'boolean — add film grain texture over background',
+                    noiseIntensity: 'number 0–100'
+                },
+                screenshot: {
+                    scale: 'number (% of canvas, e.g. 70)',
+                    x: 'number (% horizontal position, 50 = centered)',
+                    y: 'number (% vertical position, 50 = centered; values outside 0–100 bleed off canvas)',
+                    rotation: 'number (degrees, -180 to 180)',
+                    perspective: 'number (0 = flat, higher = stronger 3D tilt effect)',
+                    cornerRadius: 'number (px for rounded corners on 2D mockup)',
+                    positionPresets: {
+                        note: 'Shortcut values for common layouts — just set scale/x/y/rotation/perspective to match',
+                        centered:       { scale: 70, x: 50, y: 50,  rotation: 0,  perspective: 0  },
+                        'float-center': { scale: 60, x: 50, y: 50,  rotation: 0,  perspective: 0  },
+                        'float-bottom': { scale: 55, x: 50, y: 70,  rotation: 0,  perspective: 0  },
+                        'bleed-bottom': { scale: 85, x: 50, y: 120, rotation: 0,  perspective: 0  },
+                        'bleed-top':    { scale: 85, x: 50, y: -20, rotation: 0,  perspective: 0  },
+                        'tilt-left':    { scale: 65, x: 50, y: 60,  rotation: -8, perspective: 0  },
+                        'tilt-right':   { scale: 65, x: 50, y: 60,  rotation: 8,  perspective: 0  },
+                        perspective:    { scale: 65, x: 50, y: 50,  rotation: 0,  perspective: 15 }
+                    },
+                    shadow: {
+                        enabled: 'boolean',
+                        color: 'hex',
+                        blur: 'number (px)',
+                        opacity: 'number 0–100',
+                        x: 'number (px offset)',
+                        y: 'number (px offset)'
+                    },
+                    frame: {
+                        enabled: 'boolean — draw a device border around the screenshot',
+                        color: 'hex',
+                        width: 'number (px)',
+                        opacity: 'number 0–100'
+                    },
+                    deviceFrame: {
+                        enabled: 'boolean — draw a 2D canvas-drawn device bezel around the screenshot',
+                        type: 'iphone | android | ipad — which device shape and hardware details to render',
+                        colorScheme: 'dark | light | custom — color theme for the bezel body',
+                        customColor: 'hex string — bezel color when colorScheme is "custom"',
+                        note: 'When enabled, shadow applies to the body rect (larger than screen). Coexists with frame (border). Hidden in 3D mode.'
+                    },
+                    use3D: 'boolean — render screenshot inside a 3D phone model instead of flat',
+                    device3D: 'iphone | android',
+                    rotation3D: '{x: number, y: number, z: number} — euler angles for 3D model rotation'
+                },
+                text: {
+                    headline: {
+                        headlineEnabled: 'boolean',
+                        headlineFont: 'font family string (e.g. "Inter", "SF Pro Display")',
+                        headlineSize: 'number (px)',
+                        headlineColor: 'hex color string',
+                        headlineWeight: 'string (e.g. "400", "600", "700", "bold")',
+                        headlineItalic: 'boolean',
+                        headlineUnderline: 'boolean',
+                        headlineStrikethrough: 'boolean'
+                    },
+                    subheadline: {
+                        subheadlineEnabled: 'boolean — subheadline is off by default',
+                        subheadlineFont: 'font family string — defaults to headlineFont if omitted',
+                        subheadlineSize: 'number (px)',
+                        subheadlineColor: 'hex color string',
+                        subheadlineOpacity: 'number 0–100',
+                        subheadlineWeight: 'string (e.g. "400", "600")',
+                        subheadlineItalic: 'boolean',
+                        subheadlineUnderline: 'boolean',
+                        subheadlineStrikethrough: 'boolean'
+                    },
+                    layout: {
+                        position: 'top | bottom — vertical anchor for both texts',
+                        offsetX: 'number 0–100 (% horizontal offset, 50 = centered)',
+                        offsetY: 'number 0–100 (% distance from top/bottom edge)',
+                        textRotation: 'number (degrees, rotates entire text block around its anchor)',
+                        lineHeight: 'number (%, 100 = normal, 110 = 10% extra spacing)'
+                    },
+                    effects: {
+                        textShadow: {
+                            enabled: 'boolean',
+                            color: 'hex',
+                            blur: 'number (px)',
+                            x: 'number (px offset)',
+                            y: 'number (px offset)',
+                            opacity: 'number 0–100'
+                        },
+                        textOutline: {
+                            enabled: 'boolean',
+                            color: 'hex',
+                            width: 'number (px stroke width)'
+                        },
+                        decorations: 'headlineUnderline / headlineStrikethrough / subheadlineUnderline / subheadlineStrikethrough — rendered as filled rectangles in the text color at the correct baseline/midline positions'
+                    },
+                    notes: [
+                        'textShadow and textOutline apply to both headline and subheadline simultaneously',
+                        'textRotation rotates the entire text block (headline + subheadline together) around its anchor point',
+                        'headline text per language is set via screen.text.headline map, not style.text',
+                        'subheadline text per language is set via screen.text.subheadline map, not style.text',
+                        'providing screen.text.headline automatically enables the headline (headlineEnabled=true)',
+                        'providing screen.text.subheadline automatically enables the subheadline (subheadlineEnabled=true)',
+                        'lineHeight (%) controls headline line spacing only — subheadline line spacing is hardcoded to 1.4x subheadlineSize',
+                        'rendering order: background → screenshot → text → noise overlay'
+                    ]
+                }
+            }
         },
         automationSurface: {
             namespace: 'window.__appscreenAutomation',
@@ -590,6 +927,7 @@ function getCapabilitiesPayload() {
                 'resetProject',
                 'importLocalizedScreenshots',
                 'applyListingSpec',
+                'applyProjectJson',
                 'renderAllPng',
                 'renderPngAt'
             ]
@@ -607,6 +945,7 @@ function getCapabilitiesPayload() {
             'validate_listing_spec',
             'dry_run_listing_job',
             'generate_listing_images',
+            'render_project_json',
             'diagnose_app_boot'
         ],
         exampleSpec: EXAMPLE_LISTING_SPEC
@@ -659,7 +998,7 @@ function getTools() {
         },
         {
             name: 'generate_listing_images',
-            description: 'Render listing screenshots for all requested output devices and languages.',
+            description: 'Render listing screenshots for all requested output devices and languages. Each screen supports full style control via style.background (solid/gradient with custom stops/image+blur+overlay), style.screenshot (scale, x/y position, rotation, perspective, cornerRadius, shadow, frame border, 2D or 3D device mockup), and style.text (headline and subheadline each with independent font/size/weight/color/opacity/italic, plus shared layout: position top/bottom, offsetX/Y, textRotation, lineHeight, textShadow, textOutline). Defaults can be set at job level via spec.defaults. Call get_capabilities for the full field reference.',
             inputSchema: {
                 type: 'object',
                 properties: {
@@ -675,6 +1014,22 @@ function getTools() {
             inputSchema: {
                 type: 'object',
                 properties: {},
+                additionalProperties: false
+            }
+        },
+        {
+            name: 'render_project_json',
+            description: 'Render listing screenshots directly from an exported .appscreen.json project state. Overrides languages or devices if provided.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    projectData: { type: 'object' },
+                    outputMode: { type: 'string', enum: ['mcp-output', 'app-dir'] },
+                    outputDir: { type: 'string' },
+                    overrideDevices: { type: 'array', items: { type: 'string' } },
+                    overrideLanguages: { type: 'array', items: { type: 'string' } }
+                },
+                required: ['projectData'],
                 additionalProperties: false
             }
         }
@@ -714,6 +1069,15 @@ async function handleToolCall(name, args) {
         }
         case 'diagnose_app_boot': {
             const result = await diagnoseAppBoot();
+            return jsonTextResult(result);
+        }
+        case 'render_project_json': {
+            const result = await runProjectJob(args.projectData, {
+                outputMode: args.outputMode,
+                outputDir: args.outputDir,
+                overrideDevices: args.overrideDevices,
+                overrideLanguages: args.overrideLanguages
+            });
             return jsonTextResult(result);
         }
         default:
@@ -764,7 +1128,7 @@ async function startMcpServer() {
 
 if (require.main === module) {
     startMcpServer().catch((error) => {
-        console.error(error);
+        logDebug(`START ERROR: ${error.stack || error}`);
         process.exit(1);
     });
 }
